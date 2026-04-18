@@ -40,7 +40,7 @@ void setup() {
 
 void loop() {
   LoRa.beginPacket();
-  LoRa.print("HIDUP JOKOWI");
+  LoRa.print("Tes LoRa 1 Successful");
   LoRa.endPacket();
 
   Serial.println("Kirim dari ESP32");
