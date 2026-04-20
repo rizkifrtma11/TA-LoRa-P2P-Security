@@ -3,9 +3,7 @@ RECEIVER
 --------------------------------
 Author: Mohammad Rizki  Fadillah
 Description:
-This code is for receiving data using LoRa on an ESP32. It initializes the LoRa module, sets the necessary parameters,
-and continuously listens for incoming packets. When a packet is received, it prints the contents to the Serial Monitor.
-
+This code is for receiving data using LoRa on an ESP32. It initializes the LoRa module, sets the necessary parameters, and continuously listens for incoming packets. When a packet is received, it prints the contents to the Serial Monitor.
 Note: Make sure to connect the LoRa module to the correct pins (SS, RST, DIO0) as defined in the code.
 --------------------------------
 */

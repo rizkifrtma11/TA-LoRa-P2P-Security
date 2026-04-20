@@ -72,5 +72,5 @@ void loop() {
 
   counter++;
 
-  delay(2000);
+  delay(20000);
 }
