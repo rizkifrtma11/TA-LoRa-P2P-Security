@@ -44,7 +44,6 @@ void setup() {
 void loop() {
   float temp = dht.readTemperature();
 
-  // 🔥 HANDLE ERROR SENSOR
   if (isnan(temp)) {
     Serial.println("DHT error!");
     return;
@@ -59,18 +58,13 @@ void loop() {
 
   unsigned long timestamp = millis();
 
-  String payload = String(counter) + "," +
-                   String(timestamp) + "," +
-                   String(temp, 2) + "," +   // 🔥 2 digit desimal
-                   status;
+  String payload = String(temp, 2) + "," + status;
 
   LoRa.beginPacket();
   LoRa.print(payload);
   LoRa.endPacket();
 
   Serial.println("Kirim: " + payload);
-
-  counter++;
 
   delay(20000);
 }
