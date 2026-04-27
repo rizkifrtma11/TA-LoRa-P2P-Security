@@ -7,15 +7,7 @@ This code implements a LoRa sniffer that listens for LoRa packets on a specified
 This code is for educational purposes only. Unauthorized use may be illegal and unethical. Always obtain proper permissions before conducting any security testing.
 --------------------------------
 */
-/*
-ATTACKER / SNIFFER LoRa
---------------------------------
-Author: Mohammad Rizki  Fadillah
-Description:
-This code implements a LoRa sniffer that listens for LoRa packets on a specified frequency and prints the received data along with signal strength (RSSI) and signal-to-noise ratio (SNR). It uses the LoRa library to interface with the LoRa module and the SPI library for communication. The sniffer is configured to use specific pins for SS, RST, and DIO0, and it sets the spreading factor, signal bandwidth, and coding rate to match the sender's configuration. The code continuously checks for incoming packets and prints their contents when detected.
-This code is for educational purposes only. Unauthorized use may be illegal and unethical. Always obtain proper permissions before conducting any security testing.
---------------------------------
-*/
+
 #include <SPI.h>
 #include <LoRa.h>
 
