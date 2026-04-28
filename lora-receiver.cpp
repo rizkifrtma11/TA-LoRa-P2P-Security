@@ -7,6 +7,7 @@ This code is for receiving data using LoRa on an ESP32. It initializes the LoRa 
 Note: Make sure to connect the LoRa module to the correct pins (SS, RST, DIO0) as defined in the code.
 --------------------------------
 */
+
 #include <SPI.h>
 #include <LoRa.h>
 
@@ -36,6 +37,7 @@ unsigned long maxLatency = 0;
 unsigned long totalProcTime = 0;
 
 bool started = false;
+bool done = false; // Flag biar result cuma ke-print sekali
 
 // ===== TRACK ID =====
 bool receivedFlags[NUM_PACKETS] = {false};
@@ -73,7 +75,38 @@ void setup() {
   Serial.println("Receiver Baseline Ready (Full Metrics)");
 }
 
+void printSummary() {
+  Serial.println("\n=== RESULT ===");
+
+  float durationSec = (lastRecvTime - firstRecvTime) / 1000.0;
+  float pdr = (uniqueReceived * 100.0) / NUM_PACKETS;
+  float packetLoss = 100.0 - pdr;
+  
+  // Cegah pembagian dengan nol
+  float avgLatency = (receivedCount > 0) ? (totalLatency / (float)receivedCount) : 0;
+  float throughput = (durationSec > 0) ? ((totalBytes * 8.0) / durationSec) : 0;
+  float avgProc = (receivedCount > 0) ? (totalProcTime / (float)receivedCount) : 0;
+
+  Serial.print("Total Received: "); Serial.println(receivedCount);
+  Serial.print("Unique Received: "); Serial.println(uniqueReceived);
+  Serial.print("Duplicate: "); Serial.println(duplicateCount);
+  Serial.print("Invalid: "); Serial.println(invalidCount);
+  Serial.print("Rejected (future): "); Serial.println(rejectedCount);
+
+  Serial.print("PDR (%): "); Serial.println(pdr);
+  Serial.print("Packet Loss (%): "); Serial.println(packetLoss);
+
+  Serial.print("Avg Latency (ms): "); Serial.println(avgLatency);
+  Serial.print("Min Latency (ms): "); Serial.println(minLatency == 999999 ? 0 : minLatency);
+  Serial.print("Max Latency (ms): "); Serial.println(maxLatency);
+
+  Serial.print("Throughput (bps): "); Serial.println(throughput);
+  Serial.print("Avg Processing Time RX (ms): "); Serial.println(avgProc);
+}
+
 void loop() {
+  if (done) return; // Kalau udah selesai, stop proses
+
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
@@ -140,34 +173,18 @@ void loop() {
     Serial.print(LoRa.packetSnr());
     Serial.println();
 
-    // ===== DONE =====
+    // Kalau aja beruntung dapet pas 200 tanpa loss
     if (receivedCount >= NUM_PACKETS) {
-      Serial.println("\n=== RESULT ===");
-
-      float durationSec = (lastRecvTime - firstRecvTime) / 1000.0;
-      float pdr = (uniqueReceived * 100.0) / NUM_PACKETS;
-      float packetLoss = 100.0 - pdr;
-      float avgLatency = totalLatency / (float)receivedCount;
-      float throughput = (totalBytes * 8.0) / durationSec;
-      float avgProc = totalProcTime / (float)receivedCount;
-
-      Serial.print("Total Received: "); Serial.println(receivedCount);
-      Serial.print("Unique Received: "); Serial.println(uniqueReceived);
-      Serial.print("Duplicate: "); Serial.println(duplicateCount);
-      Serial.print("Invalid: "); Serial.println(invalidCount);
-      Serial.print("Rejected (future): "); Serial.println(rejectedCount);
-
-      Serial.print("PDR (%): "); Serial.println(pdr);
-      Serial.print("Packet Loss (%): "); Serial.println(packetLoss);
-
-      Serial.print("Avg Latency (ms): "); Serial.println(avgLatency);
-      Serial.print("Min Latency (ms): "); Serial.println(minLatency);
-      Serial.print("Max Latency (ms): "); Serial.println(maxLatency);
-
-      Serial.print("Throughput (bps): "); Serial.println(throughput);
-      Serial.print("Avg Processing Time RX (ms): "); Serial.println(avgProc);
-
-      while (1);
+      printSummary();
+      done = true;
     }
+  }
+
+  // ===== TIMEOUT LOGIC =====
+  // Kalau sistem udah jalan, tapi 5 detik ga ada paket baru masuk, berarti ada packet loss dan sender udah selesai.
+  if (started && !done && (millis() - lastRecvTime >  50000)) {
+    Serial.println("\n[TIMEOUT] 50 Detik tidak ada paket baru. Sesi dianggap selesai karena Packet Loss.");
+    printSummary();
+    done = true;
   }
 }

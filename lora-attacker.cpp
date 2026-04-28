@@ -7,6 +7,7 @@ This code implements a LoRa sniffer that listens for LoRa packets on a specified
 This code is for educational purposes only. Unauthorized use may be illegal and unethical. Always obtain proper permissions before conducting any security testing.
 --------------------------------
 */
+
 #include <SPI.h>
 #include <LoRa.h>
 
@@ -27,6 +28,11 @@ bool seen[EXPECTED] = {false};
 uint32_t uniqueCount = 0;
 uint32_t duplicateCount = 0;
 
+// ===== TIMEOUT LOGIC =====
+unsigned long lastRecvTime = 0;
+bool started = false;
+bool done = false; // Flag biar summary cuma ke-print sekali
+
 // ===== VALIDATION =====
 bool isValidPayload(String data, uint32_t &id) {
   int p1 = data.indexOf(',');
@@ -43,6 +49,24 @@ bool isValidPayload(String data, uint32_t &id) {
 
   id = idStr.toInt();
   return true;
+}
+
+void printSummary() {
+  float sniffRate = (sniffedCount * 100.0) / EXPECTED;
+  // Cegah pembagian dengan nol
+  float decodeRate = (sniffedCount > 0) ? ((decodedCount * 100.0) / sniffedCount) : 0;
+
+  Serial.println("\n=== SNIFFER SUMMARY ===");
+
+  Serial.print("Sniffed Total: "); Serial.println(sniffedCount);
+  Serial.print("Decoded Valid: "); Serial.println(decodedCount);
+  Serial.print("Invalid: "); Serial.println(invalidCount);
+
+  Serial.print("Unique: "); Serial.println(uniqueCount);
+  Serial.print("Duplicate: "); Serial.println(duplicateCount);
+
+  Serial.print("Sniff Success (%): "); Serial.println(sniffRate);
+  Serial.print("Decode Success (%): "); Serial.println(decodeRate);
 }
 
 void setup() {
@@ -62,13 +86,19 @@ void setup() {
 
   LoRa.receive();
 
-  Serial.println("Sniffer + Summary Ready...");
+  Serial.println("Sniffer + Summary Ready (With Timeout)...");
 }
 
 void loop() {
+  if (done) return; // Kalau udah selesai, stop proses
+
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
+    // ===== UPDATE TIMER =====
+    lastRecvTime = millis();
+    started = true;
+
     sniffedCount++;
 
     String data = "";
@@ -108,25 +138,18 @@ void loop() {
     if (!valid) Serial.print(" | INVALID");
 
     Serial.println();
+
+    // Kalau pas beruntung nangkep 200 tanpa loss
+    if (sniffedCount >= EXPECTED) {
+      printSummary();
+      done = true;
+    }
   }
 
-  // ===== SUMMARY =====
-  if (sniffedCount >= EXPECTED) {
-    float sniffRate = (sniffedCount * 100.0) / EXPECTED;
-    float decodeRate = (decodedCount * 100.0) / sniffedCount;
-
-    Serial.println("\n=== SNIFFER SUMMARY ===");
-
-    Serial.print("Sniffed Total: "); Serial.println(sniffedCount);
-    Serial.print("Decoded Valid: "); Serial.println(decodedCount);
-    Serial.print("Invalid: "); Serial.println(invalidCount);
-
-    Serial.print("Unique: "); Serial.println(uniqueCount);
-    Serial.print("Duplicate: "); Serial.println(duplicateCount);
-
-    Serial.print("Sniff Success (%): "); Serial.println(sniffRate);
-    Serial.print("Decode Success (%): "); Serial.println(decodeRate);
-
-    while (1);
+  // ===== TIMEOUT LOGIC (50 Detik) =====
+  if (started && !done && (millis() - lastRecvTime > 50000)) {
+    Serial.println("\n[TIMEOUT] 50 Detik tidak ada paket baru. Sesi Sniffing dianggap selesai.");
+    printSummary();
+    done = true;
   }
 }

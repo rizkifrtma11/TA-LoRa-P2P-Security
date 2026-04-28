@@ -7,6 +7,7 @@ This code is for sending data using LoRa communication protocol with an ESP32 mi
 It initializes the LoRa module, sets the necessary parameters, and sends a message every second
 --------------------------------
 */
+
 #include <SPI.h>
 #include <LoRa.h>
 #include <DHT.h>
@@ -22,7 +23,7 @@ DHT dht(DHTPIN, DHTTYPE);
 
 // ===== PARAM UJI =====
 const uint32_t NUM_PACKETS = 200;
-const uint32_t INTERVAL_MS = 10000;
+const uint32_t INTERVAL_MS = 8000;
 
 // ===== STATE =====
 uint32_t counter = 0;
