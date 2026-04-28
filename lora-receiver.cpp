@@ -16,14 +16,14 @@ Note: Make sure to connect the LoRa module to the correct pins (SS, RST, DIO0) a
 #define DIO0 26
 
 // ===== PARAM =====
-const uint32_t NUM_PACKETS = 200;
+const uint32_t NUM_PACKETS = 200; // cuma buat hitung PDR, bukan stop
 
 // ===== METRIK =====
 uint32_t receivedCount = 0;
 uint32_t uniqueReceived = 0;
 uint32_t duplicateCount = 0;
 uint32_t invalidCount = 0;
-uint32_t rejectedCount = 0; // nanti untuk HMAC/replay
+uint32_t rejectedCount = 0;
 
 uint32_t totalBytes = 0;
 
@@ -31,13 +31,13 @@ unsigned long firstRecvTime = 0;
 unsigned long lastRecvTime  = 0;
 
 unsigned long totalLatency = 0;
-unsigned long minLatency = 999999;
+unsigned long minLatency = ULONG_MAX;
 unsigned long maxLatency = 0;
 
 unsigned long totalProcTime = 0;
 
 bool started = false;
-bool done = false; // Flag biar result cuma ke-print sekali
+bool done = false;
 
 // ===== TRACK ID =====
 bool receivedFlags[NUM_PACKETS] = {false};
@@ -72,17 +72,17 @@ void setup() {
 
   LoRa.receive();
 
-  Serial.println("Receiver Baseline Ready (Full Metrics)");
+  Serial.println("Receiver Ready (Timeout-Based Mode)");
 }
 
 void printSummary() {
   Serial.println("\n=== RESULT ===");
 
   float durationSec = (lastRecvTime - firstRecvTime) / 1000.0;
-  float pdr = (uniqueReceived * 100.0) / NUM_PACKETS;
+
+  float pdr = (NUM_PACKETS > 0) ? (uniqueReceived * 100.0 / NUM_PACKETS) : 0;
   float packetLoss = 100.0 - pdr;
-  
-  // Cegah pembagian dengan nol
+
   float avgLatency = (receivedCount > 0) ? (totalLatency / (float)receivedCount) : 0;
   float throughput = (durationSec > 0) ? ((totalBytes * 8.0) / durationSec) : 0;
   float avgProc = (receivedCount > 0) ? (totalProcTime / (float)receivedCount) : 0;
@@ -97,7 +97,7 @@ void printSummary() {
   Serial.print("Packet Loss (%): "); Serial.println(packetLoss);
 
   Serial.print("Avg Latency (ms): "); Serial.println(avgLatency);
-  Serial.print("Min Latency (ms): "); Serial.println(minLatency == 999999 ? 0 : minLatency);
+  Serial.print("Min Latency (ms): "); Serial.println(minLatency == ULONG_MAX ? 0 : minLatency);
   Serial.print("Max Latency (ms): "); Serial.println(maxLatency);
 
   Serial.print("Throughput (bps): "); Serial.println(throughput);
@@ -105,7 +105,7 @@ void printSummary() {
 }
 
 void loop() {
-  if (done) return; // Kalau udah selesai, stop proses
+  if (done) return;
 
   int packetSize = LoRa.parsePacket();
 
@@ -118,7 +118,15 @@ void loop() {
 
     unsigned long tRecv = millis();
 
-    // ===== PROCESSING TIME START =====
+    // ===== START TIMER =====
+    if (!started) {
+      firstRecvTime = tRecv;
+      started = true;
+    }
+
+    lastRecvTime = tRecv;
+
+    // ===== PROCESS TIME =====
     unsigned long tStart = millis();
 
     uint32_t id;
@@ -131,18 +139,11 @@ void loop() {
     }
 
     unsigned long tEnd = millis();
-    unsigned long procTime = tEnd - tStart;
-    totalProcTime += procTime;
+    totalProcTime += (tEnd - tStart);
 
+    // ===== LATENCY =====
     unsigned long latency = tRecv - tSend;
 
-    // ===== START TIME =====
-    if (!started) {
-      firstRecvTime = tRecv;
-      started = true;
-    }
-
-    lastRecvTime = tRecv;
     receivedCount++;
     totalBytes += payload.length();
     totalLatency += latency;
@@ -150,8 +151,8 @@ void loop() {
     if (latency < minLatency) minLatency = latency;
     if (latency > maxLatency) maxLatency = latency;
 
-    // ===== TRACK UNIQUE / DUPLICATE =====
-    if (id < NUM_PACKETS) {
+    // ===== UNIQUE / DUPLICATE =====
+    if (id < NUM_PACKETS && id >= 0) {
       if (!receivedFlags[id]) {
         receivedFlags[id] = true;
         uniqueReceived++;
@@ -172,18 +173,11 @@ void loop() {
     Serial.print(" | SNR=");
     Serial.print(LoRa.packetSnr());
     Serial.println();
-
-    // Kalau aja beruntung dapet pas 200 tanpa loss
-    if (receivedCount >= NUM_PACKETS) {
-      printSummary();
-      done = true;
-    }
   }
 
-  // ===== TIMEOUT LOGIC =====
-  // Kalau sistem udah jalan, tapi 5 detik ga ada paket baru masuk, berarti ada packet loss dan sender udah selesai.
-  if (started && !done && (millis() - lastRecvTime >  50000)) {
-    Serial.println("\n[TIMEOUT] 50 Detik tidak ada paket baru. Sesi dianggap selesai karena Packet Loss.");
+  // ===== TIMEOUT (FINAL TRIGGER) =====
+  if (started && !done && (millis() - lastRecvTime > 50000)) {
+    Serial.println("\n[TIMEOUT] 50 detik tidak ada paket → sesi selesai");
     printSummary();
     done = true;
   }
