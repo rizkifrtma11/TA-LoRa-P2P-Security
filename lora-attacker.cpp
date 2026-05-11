@@ -8,6 +8,21 @@ kemudian memanipulasi (Tampering) nilai Suhu secara random dan mengubah Statusny
 Setelah dimanipulasi, paket langsung ditembakkan kembali ke udara.
 --------------------------------
 */
+/*
+ATTACKER / PASSIVE SNIFFER LoRa (AES/HMAC FORMAT)
+-------------------------------------------------
+Author: Mohammad Rizki Fadillah
+
+Passive sniffing only:
+- Tidak transmit
+- Tidak replay
+- Tidak tamper
+- Hanya capture packet
+
+Format output dibuat konsisten
+dengan Receiver Baseline/Test.
+-------------------------------------------------
+*/
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -18,34 +33,35 @@ Setelah dimanipulasi, paket langsung ditembakkan kembali ke udara.
 
 // ===== PARAM =====
 const uint32_t EXPECTED = 200;
-const unsigned long TIMEOUT_MS = 50000;     // Terminating 50 detik
+const unsigned long TIMEOUT_MS = 40000;
 
 // ===== METRICS =====
-uint32_t sniffedCount = 0;
-uint32_t decodedCount = 0;
-uint32_t invalidCount = 0;
-uint32_t tamperedCount = 0; // Ngitung total tembakan hasil manipulasi
-
-// ===== OPTIONAL UNIQUE TRACK =====
-bool seen[EXPECTED] = {false};
-uint32_t uniqueCount = 0;
+uint32_t sniffedCount   = 0;
+uint32_t decodedCount   = 0;
+uint32_t invalidCount   = 0;
 uint32_t duplicateCount = 0;
+uint32_t uniqueCount    = 0;
 
-// ===== STATE LOGIC =====
-unsigned long lastRecvTime = 0;
+uint32_t totalBytes = 0;
+
+unsigned long firstRecvTime = 0;
+unsigned long lastRecvTime  = 0;
+
 bool started = false;
-bool done = false; 
+bool done    = false;
 
-// ===== VALIDATION =====
+// ===== TRACK UNIQUE =====
+bool seen[EXPECTED] = {false};
+
+// ===== VALIDASI PAYLOAD =====
 bool isValidPayload(String data, uint32_t &id) {
-  int p1 = data.indexOf(',');
-  int p2 = data.indexOf(',', p1 + 1);
 
-  if (p1 == -1 || p2 == -1) return false;
+  int p1 = data.indexOf(',');
+
+  if (p1 == -1) return false;
 
   String idStr = data.substring(0, p1);
 
-  // cek ID numeric
   for (int i = 0; i < idStr.length(); i++) {
     if (!isDigit(idStr[i])) return false;
   }
@@ -54,34 +70,64 @@ bool isValidPayload(String data, uint32_t &id) {
   return true;
 }
 
+// ===== SUMMARY =====
 void printSummary() {
-  float sniffRate = (sniffedCount * 100.0) / EXPECTED;
-  float decodeRate = (sniffedCount > 0) ? ((decodedCount * 100.0) / sniffedCount) : 0;
-  float packetLoss = 100.0 - sniffRate;
 
-  Serial.println("\n=== ATTACKER (TAMPERING) SUMMARY ===");
+  float pdr = (EXPECTED > 0)
+              ? (uniqueCount * 100.0 / EXPECTED)
+              : 0;
 
-  Serial.print("Sniffed Total: "); Serial.println(sniffedCount);
-  Serial.print("Decoded Valid: "); Serial.println(decodedCount);
-  Serial.print("Invalid (Gagal dibaca): "); Serial.println(invalidCount);
+  float packetLoss = 100.0 - pdr;
 
-  Serial.print("Unique: "); Serial.println(uniqueCount);
-  Serial.print("Duplicate: "); Serial.println(duplicateCount);
-  
-  Serial.print("TOTAL TEMBAKAN TAMPERING: "); Serial.println(tamperedCount);
+  float durationSec =
+      (lastRecvTime - firstRecvTime) / 1000.0;
 
-  Serial.print("Sniff Success / PDR (%): "); Serial.println(sniffRate);
-  Serial.print("Missed / Packet Loss (%): "); Serial.println(packetLoss);
-  Serial.print("Decode Success (%): "); Serial.println(decodeRate);
+  float throughput =
+      (durationSec > 0)
+      ? ((totalBytes * 8.0) / durationSec)
+      : 0;
+
+  float decodeRate =
+      (sniffedCount > 0)
+      ? ((decodedCount * 100.0) / sniffedCount)
+      : 0;
+
+  Serial.println("\n=== RESULT PASSIVE SNIFFER ===");
+
+  Serial.print("Sniffed Total: ");
+  Serial.println(sniffedCount);
+
+  Serial.print("Decoded Valid: ");
+  Serial.println(decodedCount);
+
+  Serial.print("Invalid: ");
+  Serial.println(invalidCount);
+
+  Serial.print("Unique: ");
+  Serial.println(uniqueCount);
+
+  Serial.print("Duplicate: ");
+  Serial.println(duplicateCount);
+
+  Serial.print("PDR (%): ");
+  Serial.println(pdr, 2);
+
+  Serial.print("Packet Loss (%): ");
+  Serial.println(packetLoss, 2);
+
+  Serial.print("Decode Success (%): ");
+  Serial.println(decodeRate, 2);
+
+  Serial.print("Throughput (bps): ");
+  Serial.println(throughput, 2);
 }
 
 void setup() {
+
   Serial.begin(115200);
 
-  // Bikin seed random biar angkanya beneran acak tiap kali jalan
-  randomSeed(analogRead(0)); 
-
   SPI.begin(18, 19, 23, SS);
+
   LoRa.setPins(SS, RST, DIO0);
 
   if (!LoRa.begin(433000000)) {
@@ -95,103 +141,107 @@ void setup() {
 
   LoRa.receive();
 
-  Serial.println("Attacker (Sniff + TAMPERING) Ready...");
-  Serial.println("Langsung manipulasi & tembak tiap dapet mangsa\n");
+  Serial.println("Passive Sniffer AES/HMAC Ready...");
 }
 
 void loop() {
-  if (done) return; 
+
+  if (done) return;
 
   int packetSize = LoRa.parsePacket();
 
+  // =========================================
+  // RECEIVE PACKET
+  // =========================================
   if (packetSize) {
-    lastRecvTime = millis();
-    started = true;
+
+    unsigned long tRecv = millis();
+
+    if (!started) {
+      firstRecvTime = tRecv;
+      started = true;
+    }
+
+    lastRecvTime = tRecv;
+
     sniffedCount++;
 
     String data = "";
+
     while (LoRa.available()) {
       data += (char)LoRa.read();
     }
 
+    totalBytes += data.length();
+
     uint32_t id = 0;
+
     bool valid = isValidPayload(data, id);
 
     if (valid) {
+
       decodedCount++;
+
       if (id < EXPECTED) {
+
         if (!seen[id]) {
           seen[id] = true;
           uniqueCount++;
-        } else {
+        }
+        else {
           duplicateCount++;
         }
       }
-    } else {
+    }
+    else {
       invalidCount++;
     }
 
-    // =========================
-    // LOG SNIFF (NGUPING)
-    // =========================
-    Serial.print("[SNIFF] Asli: ");
+    // =========================================
+    // FORMAT LOG
+    // =========================================
+    Serial.print("[SNIFF] ");
     Serial.print(data);
+
+    Serial.print(" | SIZE=");
+    Serial.print(data.length());
+
     Serial.print(" | RSSI=");
     Serial.print(LoRa.packetRssi());
-    if (!valid) Serial.print(" | INVALID");
-    Serial.println();
 
-    // =========================
-    // TAMPERING LOGIC (MANIPULASI DATA)
-    // =========================
-    if (valid) { 
-      // 1. Ekstrak ID dan Timestamp dari payload asli
-      int p1 = data.indexOf(',');
-      int p2 = data.indexOf(',', p1 + 1);
-      
-      if (p1 != -1 && p2 != -1) {
-        String idStr = data.substring(0, p1);
-        String tsStr = data.substring(p1 + 1, p2);
+    Serial.print(" | SNR=");
+    Serial.print(LoRa.packetSnr());
 
-        // 2. Bikin suhu palsu secara random (antara 10.00 sampai 50.00 derajat)
-        float fakeTemp = random(1000, 5000) / 100.0;
-        
-        // 3. Ubah status sesuai suhu palsu
-        String fakeStatus = (fakeTemp > 30.0) ? "PANAS" : "AMAN";
-
-        // 4. Jahit ulang jadi payload baru yang siap tembak
-        String tamperedData = idStr + "," + tsStr + "," + String(fakeTemp, 2) + "," + fakeStatus;
-
-        // =========================
-        // TEMBAK DATA PALSU
-        // =========================
-        tamperedCount++;
-        Serial.print("  └─> [TAMPER] Tembak palsu: ");
-        Serial.println(tamperedData);
-
-        LoRa.beginPacket();
-        LoRa.print(tamperedData);
-        LoRa.endPacket();
-
-        LoRa.receive(); // Wajib balik ke mode receive biar siap nguping paket berikutnya
-      }
+    if (!valid) {
+      Serial.print(" | INVALID");
     }
 
-    // =========================
-    // CEK TARGET
-    // =========================
+    Serial.println();
+
+    // =========================================
+    // AUTO DONE
+    // =========================================
     if (sniffedCount >= EXPECTED) {
+
       printSummary();
+
       done = true;
     }
   }
 
-  // =========================
-  // TIMEOUT / TERMINATING LOGIC (50 Detik)
-  // =========================
-  if (started && !done && (millis() - lastRecvTime > TIMEOUT_MS)) {
-    Serial.println("\n[TIMEOUT] 50 Detik ga ada mangsa baru. Sesi Tampering STOP!");
+  // =========================================
+  // TIMEOUT
+  // =========================================
+  if (started &&
+      !done &&
+      (millis() - lastRecvTime > TIMEOUT_MS)) {
+
+    Serial.println(
+      "\n[TIMEOUT] 40 detik tidak ada paket baru"
+    );
+
     printSummary();
+
     done = true;
   }
 }
