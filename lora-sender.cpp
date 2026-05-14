@@ -23,6 +23,7 @@ Catatan:
 #include <SPI.h>
 #include <LoRa.h>
 #include <DHT.h>
+#include "mbedtls/aes.h"
 
 #define DHTPIN   4
 #define DHTTYPE  DHT22
@@ -34,6 +35,24 @@ DHT dht(DHTPIN, DHTTYPE);
 #define DIO0  2
 
 long packetId = 0;
+
+// =========================
+// AES CONFIG
+// =========================
+const char* MASTER_KEY = "SkripsiKi2026!!!"; // 16 byte
+const char* IV_BASE    = "IV-LORA-2026";     // 12 byte base
+uint32_t counter = 0;
+
+// hex converter
+String bytesToHex(unsigned char* data, size_t length) {
+  String hexStr = "";
+  for (size_t i = 0; i < length; i++) {
+    if (data[i] < 0x10) hexStr += "0";
+    hexStr += String(data[i], HEX);
+  }
+  hexStr.toUpperCase();
+  return hexStr;
+}
 
 void setup() {
 
@@ -48,13 +67,8 @@ void setup() {
     while (1);
   }
 
-  // =========================
-  // LoRa Configuration
-  // =========================
   LoRa.setTxPower(17);
-
   LoRa.setSpreadingFactor(7);
-
   LoRa.setSignalBandwidth(125E3);
 
   Serial.println("LoRa Sender Ready");
@@ -65,37 +79,25 @@ void setup() {
 void loop() {
 
   float temperature = dht.readTemperature();
-
   float humidity = dht.readHumidity();
 
   if (isnan(temperature) || isnan(humidity)) {
-
     Serial.println("Failed to read DHT");
-
     delay(2000);
-
     return;
   }
 
   packetId++;
-
   unsigned long senderTimestamp = millis();
 
   String statusData;
 
-  if (temperature >= 33.0) {
-    statusData = "PANAS";
-  }
-  else if (temperature >= 28.0) {
-    statusData = "NORMAL";
-  }
-  else {
-    statusData = "DINGIN";
-  }
+  if (temperature >= 33.0) statusData = "PANAS";
+  else if (temperature >= 28.0) statusData = "NORMAL";
+  else statusData = "DINGIN";
 
   // =========================
-  // Payload Format:
-  // ID,TIMESTAMP,TEMP,HUM,STATUS
+  // PLAIN PAYLOAD (struktur lama)
   // =========================
   String payload =
       String(packetId) + "," +
@@ -104,21 +106,68 @@ void loop() {
       String(humidity, 2) + "," +
       statusData;
 
+  unsigned long tStart = micros();
+
   // =========================
-  // Send Packet
+  // AES-CTR ENCRYPT
+  // =========================
+  char plain[128];
+  strncpy(plain, payload.c_str(), sizeof(plain));
+
+  unsigned char nc[16] = {0};
+  memcpy(nc, IV_BASE, 12);
+
+  nc[12] = (counter >> 24) & 0xFF;
+  nc[13] = (counter >> 16) & 0xFF;
+  nc[14] = (counter >> 8) & 0xFF;
+  nc[15] = counter & 0xFF;
+
+  unsigned char stream_block[16] = {0};
+  size_t nc_off = 0;
+  unsigned char ciphertext[128];
+
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_enc(&aes, (const unsigned char*)MASTER_KEY, 128);
+
+  mbedtls_aes_crypt_ctr(
+    &aes,
+    payload.length(),
+    &nc_off,
+    nc,
+    stream_block,
+    (const unsigned char*)plain,
+    ciphertext
+  );
+
+  mbedtls_aes_free(&aes);
+
+  String cipherHex = bytesToHex(ciphertext, payload.length());
+
+  unsigned long procTime = micros() - tStart;
+
+  // =========================
+  // FINAL PAYLOAD (counter + encrypted data)
+  // =========================
+  String finalPayload = String(counter) + "," + cipherHex;
+
+  // =========================
+  // SEND
   // =========================
   LoRa.beginPacket();
-
-  LoRa.print(payload);
-
+  LoRa.print(finalPayload);
   LoRa.endPacket();
 
   // =========================
-  // Serial Monitor Log
+  // LOG
   // =========================
-  Serial.print("SEND: ");
+  Serial.print("SEND ENC: ");
+  Serial.print(finalPayload);
+  Serial.print(" | PROC=");
+  Serial.print(procTime);
+  Serial.println(" us");
 
-  Serial.println(payload);
+  counter++;
 
   delay(5000);
 }
