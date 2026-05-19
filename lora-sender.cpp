@@ -1,50 +1,38 @@
 /*
 SENDER
 --------------------------------
-Author: Mohammad Rizki  Fadillah
-Deskripsi:
-- Menggunakan sensor DHT22 untuk membaca suhu dan kelembaban udara.
-- Mengirim data suhu, kelembaban, dan status suhu (PANAS/NORMAL/DINGIN) melalui LoRa.
-- Format payload: ID,TIMESTAMP,TEMP,HUM,STATUS
-- ID: Nomor urut paket yang dikirim.
-- TIMESTAMP: Waktu pengiriman dalam milidetik sejak program dimulai.
-- TEMP: Nilai suhu dengan 2 desimal.
-- HUM: Nilai kelembaban dengan 2 desimal.
-- STATUS: Kategori suhu berdasarkan nilai suhu (PANAS/NORMAL/DINGIN).
-- Pengiriman dilakukan setiap 5 detik.
-
-Catatan:
-- Pastikan untuk menghubungkan sensor DHT22 ke pin yang sesuai (DHTPIN) dan LoRa ke pin SS, RST, DIO0 yang telah ditentukan.
-- Sesuaikan frekuensi LoRa (433E6) jika menggunakan frekuensi yang berbeda.
-- Pastikan library LoRa dan DHT sensor library sudah terinstal di lingkungan pengembangan Anda.
---------------------------------
-*/
-/*
-RECEIVER
---------------------------------
 Author: Mohammad Rizki Fadillah
 
 SECURITY FEATURES:
-- AES-128 CTR Decryption
-- HMAC-SHA256 Verification
+- AES-128 CTR Encryption
+- HMAC-SHA256 Integrity
 - Counter-Based Nonce
 - Dynamic Derived Key Function
-- Replay Attack Detection
+- Replay Protection Support
 
 FINAL PAYLOAD FORMAT:
 COUNTER,CIPHERTEXT,HMAC
+
 --------------------------------
 */
 
 #include <SPI.h>
 #include <LoRa.h>
+#include <DHT.h>
 
 #include "mbedtls/aes.h"
 #include "mbedtls/md.h"
 
+#define DHTPIN   4
+#define DHTTYPE  DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
+
 #define SS    5
 #define RST   14
 #define DIO0  2
+
+long packetId = 0;
 
 // =====================================
 // MASTER KEY
@@ -65,47 +53,12 @@ const char* IV_BASE =
   "IV-LORA-2026";
 
 // =====================================
-// LAST COUNTER
-// ANTI REPLAY
+// COUNTER NONCE
 // =====================================
-uint32_t lastCounter = 0;
-
-// =====================================
-// HEX CHAR -> BYTE
-// =====================================
-uint8_t hexCharToByte(char c) {
-
-  if (c >= '0' && c <= '9')
-    return c - '0';
-
-  if (c >= 'A' && c <= 'F')
-    return c - 'A' + 10;
-
-  if (c >= 'a' && c <= 'f')
-    return c - 'a' + 10;
-
-  return 0;
-}
+uint32_t counter = 0;
 
 // =====================================
-// HEX TO BYTES
-// =====================================
-void hexToBytes(
-  String hex,
-  unsigned char* out
-) {
-
-  for (size_t i = 0; i < hex.length() / 2; i++) {
-
-    out[i] =
-      (hexCharToByte(hex[i * 2]) << 4)
-      |
-      hexCharToByte(hex[i * 2 + 1]);
-  }
-}
-
-// =====================================
-// BYTES TO HEX
+// HEX CONVERTER
 // =====================================
 String bytesToHex(
   unsigned char* data,
@@ -130,6 +83,7 @@ String bytesToHex(
 // =====================================
 // DERIVED KEY FUNCTION
 // SHA256(master_key + counter)
+// ambil 16 byte pertama
 // =====================================
 void deriveKey(
   uint32_t counter,
@@ -151,6 +105,7 @@ void deriveKey(
     shaResult
   );
 
+  // ambil 16 byte pertama
   memcpy(aesKey, shaResult, 16);
 }
 
@@ -202,42 +157,34 @@ void setup() {
 
   Serial.begin(115200);
 
-  LoRa.setPins(
-    SS,
-    RST,
-    DIO0
-  );
+  dht.begin();
+
+  LoRa.setPins(SS, RST, DIO0);
 
   if (!LoRa.begin(433E6)) {
 
-    Serial.println(
-      "LoRa init failed!"
-    );
+    Serial.println("LoRa init failed!");
 
     while (1);
   }
+
+  LoRa.setTxPower(17);
 
   LoRa.setSpreadingFactor(7);
 
   LoRa.setSignalBandwidth(125E3);
 
-  Serial.println(
-    "================================"
-  );
+  Serial.println("================================");
 
-  Serial.println(
-    "SECURE RECEIVER READY"
-  );
+  Serial.println("SECURE LORA SENDER READY");
 
-  Serial.println(
-    "AES + HMAC + ANTI REPLAY"
-  );
+  Serial.println("AES-128 CTR + HMAC-SHA256");
 
-  Serial.println(
-    "================================"
-  );
+  Serial.println("Dynamic Derived Key Enabled");
 
-  LoRa.receive();
+  Serial.println("================================");
+
+  delay(3000);
 }
 
 // =====================================
@@ -245,295 +192,193 @@ void setup() {
 // =====================================
 void loop() {
 
-  uint32_t startProc =
+  // =====================================
+  // READ SENSOR
+  // =====================================
+  float temperature =
+    dht.readTemperature();
+
+  float humidity =
+    dht.readHumidity();
+
+  if (
+    isnan(temperature) ||
+    isnan(humidity)
+  ) {
+
+    Serial.println("Failed to read DHT");
+
+    delay(2000);
+
+    return;
+  }
+
+  // =====================================
+  // PACKET ID
+  // =====================================
+  packetId++;
+
+  unsigned long senderTimestamp =
+    millis();
+
+  // =====================================
+  // STATUS
+  // =====================================
+  String statusData;
+
+  if (temperature >= 33.0)
+    statusData = "PANAS";
+
+  else if (temperature >= 28.0)
+    statusData = "NORMAL";
+
+  else
+    statusData = "DINGIN";
+
+  // =====================================
+  // PLAIN PAYLOAD
+  // =====================================
+  String payload =
+      String(packetId) + "," +
+      String(senderTimestamp) + "," +
+      String(temperature, 2) + "," +
+      String(humidity, 2) + "," +
+      statusData;
+
+  unsigned long tStart =
     micros();
 
-  int packetSize =
-    LoRa.parsePacket();
+  // =====================================
+  // DERIVE DYNAMIC AES KEY
+  // =====================================
+  unsigned char dynamicKey[16];
 
-  if (packetSize) {
+  deriveKey(counter, dynamicKey);
 
-    String payload = "";
+  // =====================================
+  // AES CTR NONCE
+  // =====================================
+  unsigned char nc[16] = {0};
 
-    while (LoRa.available()) {
+  memcpy(nc, IV_BASE, 12);
 
-      payload +=
-        (char)LoRa.read();
-    }
+  nc[12] = (counter >> 24) & 0xFF;
+  nc[13] = (counter >> 16) & 0xFF;
+  nc[14] = (counter >> 8) & 0xFF;
+  nc[15] = counter & 0xFF;
 
-    // =====================================
-    // SPLIT:
-    // COUNTER,CIPHER,HMAC
-    // =====================================
-    int p1 =
-      payload.indexOf(',');
+  // =====================================
+  // PREPARE BUFFER
+  // =====================================
+  char plain[128];
 
-    int p2 =
-      payload.indexOf(
-        ',',
-        p1 + 1
-      );
+  strncpy(
+    plain,
+    payload.c_str(),
+    sizeof(plain)
+  );
 
-    if (
-      p1 == -1 ||
-      p2 == -1
-    ) {
+  unsigned char stream_block[16] = {0};
 
-      Serial.println(
-        "[ERROR] Invalid format"
-      );
+  size_t nc_off = 0;
 
-      return;
-    }
+  unsigned char ciphertext[128];
 
-    String counterStr =
-      payload.substring(0, p1);
+  // =====================================
+  // AES CTR ENCRYPTION
+  // =====================================
+  mbedtls_aes_context aes;
 
-    String cipherHex =
-      payload.substring(
-        p1 + 1,
-        p2
-      );
+  mbedtls_aes_init(&aes);
 
-    String recvHmac =
-      payload.substring(
-        p2 + 1
-      );
+  mbedtls_aes_setkey_enc(
+    &aes,
+    dynamicKey,
+    128
+  );
 
-    uint32_t counter =
-      counterStr.toInt();
+  mbedtls_aes_crypt_ctr(
+    &aes,
+    payload.length(),
+    &nc_off,
+    nc,
+    stream_block,
+    (const unsigned char*)plain,
+    ciphertext
+  );
 
-    // =====================================
-    // HMAC VERIFY
-    // =====================================
-    String authData =
-      counterStr + "," +
+  mbedtls_aes_free(&aes);
+
+  // =====================================
+  // HEX CIPHERTEXT
+  // =====================================
+  String cipherHex =
+    bytesToHex(
+      ciphertext,
+      payload.length()
+    );
+
+  // =====================================
+  // AUTH DATA
+  // counter + ciphertext
+  // =====================================
+  String authData =
+      String(counter) + "," +
       cipherHex;
 
-    String calcHmac =
-      hmacSHA256(authData);
+  // =====================================
+  // HMAC SHA256
+  // =====================================
+  String hmacHex =
+    hmacSHA256(authData);
 
-    if (
-      calcHmac != recvHmac
-    ) {
+  // =====================================
+  // FINAL PAYLOAD
+  // COUNTER,CIPHER,HMAC
+  // =====================================
+  String finalPayload =
+      authData + "," +
+      hmacHex;
 
-      Serial.println(
-        "[DROP] HMAC INVALID"
-      );
+  unsigned long procTime =
+    micros() - tStart;
 
-      LoRa.receive();
+  // =====================================
+  // SEND PACKET
+  // =====================================
+  LoRa.beginPacket();
 
-      return;
-    }
+  LoRa.print(finalPayload);
 
-    // =====================================
-    // ANTI REPLAY
-    // =====================================
-    if (
-      counter <= lastCounter
-    ) {
+  LoRa.endPacket();
 
-      Serial.print(
-        "[DROP] REPLAY DETECTED | COUNTER="
-      );
+  // =====================================
+  // LOG
+  // =====================================
+  Serial.println("\n========== SEND ==========");
 
-      Serial.println(counter);
+  Serial.print("PLAIN     : ");
+  Serial.println(payload);
 
-      LoRa.receive();
+  Serial.print("COUNTER   : ");
+  Serial.println(counter);
 
-      return;
-    }
+  Serial.print("CIPHER    : ");
+  Serial.println(cipherHex);
 
-    lastCounter = counter;
+  Serial.print("HMAC      : ");
+  Serial.println(hmacHex);
 
-    // =====================================
-    // HEX CLEAN
-    // =====================================
-    String cleanHex = "";
+  Serial.print("PROC TIME : ");
+  Serial.print(procTime);
+  Serial.println(" us");
 
-    for (
-      int i = 0;
-      i < cipherHex.length();
-      i++
-    ) {
+  Serial.println("==========================");
 
-      if (
-        isxdigit(cipherHex[i])
-      ) {
+  // =====================================
+  // NEXT COUNTER
+  // =====================================
+  counter++;
 
-        cleanHex +=
-          cipherHex[i];
-      }
-    }
-
-    if (
-      cleanHex.length() % 2 != 0
-    ) {
-
-      Serial.println(
-        "[ERROR] HEX CORRUPTED"
-      );
-
-      return;
-    }
-
-    // =====================================
-    // HEX -> BYTES
-    // =====================================
-    size_t cipherLen =
-      cleanHex.length() / 2;
-
-    unsigned char ciphertext[cipherLen];
-
-    hexToBytes(
-      cleanHex,
-      ciphertext
-    );
-
-    // =====================================
-    // DERIVE AES KEY
-    // =====================================
-    unsigned char dynamicKey[16];
-
-    deriveKey(
-      counter,
-      dynamicKey
-    );
-
-    // =====================================
-    // NONCE
-    // =====================================
-    unsigned char nc[16] = {0};
-
-    memcpy(
-      nc,
-      IV_BASE,
-      12
-    );
-
-    nc[12] =
-      (counter >> 24) & 0xFF;
-
-    nc[13] =
-      (counter >> 16) & 0xFF;
-
-    nc[14] =
-      (counter >> 8) & 0xFF;
-
-    nc[15] =
-      counter & 0xFF;
-
-    // =====================================
-    // AES CTR DECRYPT
-    // =====================================
-    unsigned char stream_block[16] = {0};
-
-    size_t nc_off = 0;
-
-    unsigned char plainBytes[cipherLen + 1];
-
-    memset(
-      plainBytes,
-      0,
-      sizeof(plainBytes)
-    );
-
-    mbedtls_aes_context aes;
-
-    mbedtls_aes_init(&aes);
-
-    mbedtls_aes_setkey_enc(
-      &aes,
-      dynamicKey,
-      128
-    );
-
-    mbedtls_aes_crypt_ctr(
-      &aes,
-      cipherLen,
-      &nc_off,
-      nc,
-      stream_block,
-      ciphertext,
-      plainBytes
-    );
-
-    mbedtls_aes_free(&aes);
-
-    String decrypted =
-      String((char*)plainBytes);
-
-    // =====================================
-    // PARSE DATA
-    // =====================================
-    int idx1 =
-      decrypted.indexOf(',');
-
-    int idx2 =
-      decrypted.indexOf(
-        ',',
-        idx1 + 1
-      );
-
-    long senderTimestamp =
-      decrypted.substring(
-        idx1 + 1,
-        idx2
-      ).toInt();
-
-    // =====================================
-    // METRICS
-    // =====================================
-    long latency =
-      millis() -
-      senderTimestamp;
-
-    int rssi =
-      LoRa.packetRssi();
-
-    float snr =
-      LoRa.packetSnr();
-
-    uint32_t procRx =
-      micros() -
-      startProc;
-
-    uint32_t freeRam =
-      ESP.getFreeHeap();
-
-    // =====================================
-    // OUTPUT
-    // =====================================
-    Serial.print("PAYLOAD=");
-    Serial.print(decrypted);
-
-    Serial.print("|CTR=");
-    Serial.print(counter);
-
-    Serial.print("|ENC=");
-    Serial.print(cleanHex);
-
-    Serial.print("|HMAC=");
-    Serial.print(recvHmac);
-
-    Serial.print("|LAT=");
-    Serial.print(latency);
-
-    Serial.print("|RSSI=");
-    Serial.print(rssi);
-
-    Serial.print("|SNR=");
-    Serial.print(snr);
-
-    Serial.print("|PROC=");
-    Serial.print(procRx);
-
-    Serial.print("|SIZE=");
-    Serial.print(packetSize);
-
-    Serial.print("|RAM=");
-    Serial.println(freeRam);
-
-    LoRa.receive();
-  }
+  delay(5000);
 }
