@@ -1,18 +1,17 @@
 /*
-SENDER
+SECURE LORA SENDER
 --------------------------------
 Author: Mohammad Rizki Fadillah
 
-SECURITY FEATURES:
+FEATURES:
 - AES-128 CTR Encryption
 - HMAC-SHA256 Integrity
-- Counter-Based Nonce
-- Dynamic Derived Key Function
-- Replay Protection Support
+- Dynamic Key Derivation
+- Counter Nonce
+- ACK Based Latency (RTT/2)
 
-FINAL PAYLOAD FORMAT:
+FINAL PAYLOAD:
 COUNTER,CIPHERTEXT,HMAC
-
 --------------------------------
 */
 
@@ -32,7 +31,13 @@ DHT dht(DHTPIN, DHTTYPE);
 #define RST   14
 #define DIO0  2
 
+// =====================================
+// CONFIG
+// =====================================
+const unsigned long ACK_TIMEOUT = 3000;
+
 long packetId = 0;
+uint32_t counter = 0;
 
 // =====================================
 // MASTER KEY
@@ -53,12 +58,7 @@ const char* IV_BASE =
   "IV-LORA-2026";
 
 // =====================================
-// COUNTER NONCE
-// =====================================
-uint32_t counter = 0;
-
-// =====================================
-// HEX CONVERTER
+// BYTES -> HEX
 // =====================================
 String bytesToHex(
   unsigned char* data,
@@ -81,8 +81,8 @@ String bytesToHex(
 }
 
 // =====================================
-// DERIVED KEY FUNCTION
-// SHA256(master_key + counter)
+// DYNAMIC AES KEY
+// SHA256(master + counter)
 // ambil 16 byte pertama
 // =====================================
 void deriveKey(
@@ -105,14 +105,15 @@ void deriveKey(
     shaResult
   );
 
-  // ambil 16 byte pertama
   memcpy(aesKey, shaResult, 16);
 }
 
 // =====================================
 // HMAC SHA256
 // =====================================
-String hmacSHA256(String data) {
+String hmacSHA256(
+  String data
+) {
 
   unsigned char hmacResult[32];
 
@@ -147,7 +148,10 @@ String hmacSHA256(String data) {
 
   mbedtls_md_free(&ctx);
 
-  return bytesToHex(hmacResult, 32);
+  return bytesToHex(
+    hmacResult,
+    32
+  );
 }
 
 // =====================================
@@ -159,11 +163,19 @@ void setup() {
 
   dht.begin();
 
-  LoRa.setPins(SS, RST, DIO0);
+  LoRa.setPins(
+    SS,
+    RST,
+    DIO0
+  );
 
-  if (!LoRa.begin(433E6)) {
+  if (
+    !LoRa.begin(433E6)
+  ) {
 
-    Serial.println("LoRa init failed!");
+    Serial.println(
+      "LoRa init failed!"
+    );
 
     while (1);
   }
@@ -172,17 +184,29 @@ void setup() {
 
   LoRa.setSpreadingFactor(7);
 
-  LoRa.setSignalBandwidth(125E3);
+  LoRa.setSignalBandwidth(
+    125E3
+  );
 
-  Serial.println("================================");
+  Serial.println(
+    "================================"
+  );
 
-  Serial.println("SECURE LORA SENDER READY");
+  Serial.println(
+    "SECURE LORA SENDER READY"
+  );
 
-  Serial.println("AES-128 CTR + HMAC-SHA256");
+  Serial.println(
+    "AES-128 CTR + HMAC"
+  );
 
-  Serial.println("Dynamic Derived Key Enabled");
+  Serial.println(
+    "ACK RTT LATENCY ENABLED"
+  );
 
-  Serial.println("================================");
+  Serial.println(
+    "================================"
+  );
 
   delay(3000);
 }
@@ -206,20 +230,16 @@ void loop() {
     isnan(humidity)
   ) {
 
-    Serial.println("Failed to read DHT");
+    Serial.println(
+      "Failed to read DHT"
+    );
 
     delay(2000);
 
     return;
   }
 
-  // =====================================
-  // PACKET ID
-  // =====================================
   packetId++;
-
-  unsigned long senderTimestamp =
-    millis();
 
   // =====================================
   // STATUS
@@ -229,47 +249,63 @@ void loop() {
   if (temperature >= 33.0)
     statusData = "PANAS";
 
-  else if (temperature >= 28.0)
+  else if (
+    temperature >= 28.0
+  )
     statusData = "NORMAL";
 
   else
     statusData = "DINGIN";
 
   // =====================================
-  // PLAIN PAYLOAD
+  // PLAINTEXT PAYLOAD
+  // id,temp,hum,status
   // =====================================
   String payload =
       String(packetId) + "," +
-      String(senderTimestamp) + "," +
       String(temperature, 2) + "," +
       String(humidity, 2) + "," +
       statusData;
 
-  unsigned long tStart =
+  // =====================================
+  // START PROCESS TIMER
+  // =====================================
+  uint32_t procStart =
     micros();
 
   // =====================================
-  // DERIVE DYNAMIC AES KEY
+  // DERIVE AES KEY
   // =====================================
   unsigned char dynamicKey[16];
 
-  deriveKey(counter, dynamicKey);
+  deriveKey(
+    counter,
+    dynamicKey
+  );
 
   // =====================================
-  // AES CTR NONCE
+  // NONCE CTR
   // =====================================
   unsigned char nc[16] = {0};
 
-  memcpy(nc, IV_BASE, 12);
+  memcpy(
+    nc,
+    IV_BASE,
+    12
+  );
 
-  nc[12] = (counter >> 24) & 0xFF;
-  nc[13] = (counter >> 16) & 0xFF;
-  nc[14] = (counter >> 8) & 0xFF;
-  nc[15] = counter & 0xFF;
+  nc[12] =
+    (counter >> 24) & 0xFF;
 
-  // =====================================
-  // PREPARE BUFFER
-  // =====================================
+  nc[13] =
+    (counter >> 16) & 0xFF;
+
+  nc[14] =
+    (counter >> 8) & 0xFF;
+
+  nc[15] =
+    counter & 0xFF;
+
   char plain[128];
 
   strncpy(
@@ -278,18 +314,20 @@ void loop() {
     sizeof(plain)
   );
 
+  unsigned char ciphertext[128];
+
   unsigned char stream_block[16] = {0};
 
   size_t nc_off = 0;
-
-  unsigned char ciphertext[128];
 
   // =====================================
   // AES CTR ENCRYPTION
   // =====================================
   mbedtls_aes_context aes;
 
-  mbedtls_aes_init(&aes);
+  mbedtls_aes_init(
+    &aes
+  );
 
   mbedtls_aes_setkey_enc(
     &aes,
@@ -307,10 +345,12 @@ void loop() {
     ciphertext
   );
 
-  mbedtls_aes_free(&aes);
+  mbedtls_aes_free(
+    &aes
+  );
 
   // =====================================
-  // HEX CIPHERTEXT
+  // HEX CIPHER
   // =====================================
   String cipherHex =
     bytesToHex(
@@ -319,65 +359,175 @@ void loop() {
     );
 
   // =====================================
-  // AUTH DATA
-  // counter + ciphertext
+  // HMAC DATA
   // =====================================
   String authData =
-      String(counter) + "," +
+      String(counter) +
+      "," +
       cipherHex;
 
-  // =====================================
-  // HMAC SHA256
-  // =====================================
   String hmacHex =
-    hmacSHA256(authData);
+    hmacSHA256(
+      authData
+    );
 
   // =====================================
   // FINAL PAYLOAD
-  // COUNTER,CIPHER,HMAC
   // =====================================
   String finalPayload =
-      authData + "," +
+      authData +
+      "," +
       hmacHex;
 
-  unsigned long procTime =
-    micros() - tStart;
+  uint32_t procTime =
+    micros() -
+    procStart;
 
   // =====================================
-  // SEND PACKET
+  // SEND + RTT TIMER
   // =====================================
+  uint32_t t0 =
+    millis();
+
   LoRa.beginPacket();
 
-  LoRa.print(finalPayload);
+  LoRa.print(
+    finalPayload
+  );
 
   LoRa.endPacket();
+
+  // balik receive
+  LoRa.receive();
+
+  bool ackReceived =
+    false;
+
+  uint32_t rtt = 0;
+  uint32_t latency = 0;
+
+  while (
+    millis() - t0 <
+    ACK_TIMEOUT
+  ) {
+
+    int packetSize =
+      LoRa.parsePacket();
+
+    if (
+      packetSize
+    ) {
+
+      String ack =
+        "";
+
+      while (
+        LoRa.available()
+      ) {
+
+        ack +=
+          (char)
+          LoRa.read();
+      }
+
+      String expectedAck =
+          "ACK," +
+          String(counter);
+
+      if (
+        ack ==
+        expectedAck
+      ) {
+
+        ackReceived =
+          true;
+
+        rtt =
+          millis() -
+          t0;
+
+        latency =
+          rtt / 2;
+
+        break;
+      }
+    }
+  }
 
   // =====================================
   // LOG
   // =====================================
-  Serial.println("\n========== SEND ==========");
+  Serial.print(
+    "PAYLOAD="
+  );
+  Serial.print(
+    payload
+  );
 
-  Serial.print("PLAIN     : ");
-  Serial.println(payload);
+  Serial.print(
+    " | COUNTER="
+  );
+  Serial.print(
+    counter
+  );
 
-  Serial.print("COUNTER   : ");
-  Serial.println(counter);
+  Serial.print(
+    " | CIPHER="
+  );
+  Serial.print(
+    cipherHex
+  );
 
-  Serial.print("CIPHER    : ");
-  Serial.println(cipherHex);
+  Serial.print(
+    " | HMAC="
+  );
+  Serial.print(
+    hmacHex
+  );
 
-  Serial.print("HMAC      : ");
-  Serial.println(hmacHex);
+  Serial.print(
+    " | PROC TX="
+  );
+  Serial.print(
+    procTime
+  );
+  Serial.print(
+    " us | "
+  );
 
-  Serial.print("PROC TIME : ");
-  Serial.print(procTime);
-  Serial.println(" us");
+  if (
+    ackReceived
+  ) {
 
-  Serial.println("==========================");
+    Serial.print(
+      "RTT="
+    );
+    Serial.print(
+      rtt
+    );
+    Serial.print(
+      " ms | "
+    );
 
-  // =====================================
-  // NEXT COUNTER
-  // =====================================
+    Serial.print(
+      "LATENCY="
+    );
+    Serial.print(
+      latency
+    );
+    Serial.print(
+      " ms"
+    );
+
+    Serial.println();
+  }
+  else {
+    Serial.print(
+      "ACK TIMEOUT"
+    );
+    Serial.println();
+  }
+
   counter++;
 
   delay(5000);
