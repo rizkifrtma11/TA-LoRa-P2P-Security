@@ -13,6 +13,10 @@ void setup() {
   );
 
   rtc.begin();
+
+  Serial.println(
+    "RTC Running..."
+  );
 }
 
 void loop() {
@@ -20,11 +24,14 @@ void loop() {
   DateTime now =
     rtc.now();
 
+  Serial.print("\r"); // balik ke awal baris
+
   Serial.print(
     now.timestamp()
   );
 
-  Serial.println();
+  Serial.print("   "); 
+  // padding biar karakter lama ketimpa
 
   delay(1000);
 }
