@@ -115,7 +115,7 @@ void setup() {
   }
 
   LoRa.setSpreadingFactor(
-    9
+    7
   );
 
   LoRa.setSignalBandwidth(
